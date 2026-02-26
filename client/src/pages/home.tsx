@@ -22,7 +22,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ChevronDown, ChevronUp, Info, Ship, TrendingUp, AlertTriangle, ShieldCheck, Minus } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Ship, TrendingUp, AlertTriangle, ShieldCheck, Minus, FlaskConical } from "lucide-react";
 import {
   calculate,
   type CalcInputs,
@@ -421,6 +421,11 @@ export default function Home() {
                     <span>$20</span>
                     <span>$300</span>
                   </div>
+                  {result.triggers.some((t) => t.premium > inputs.budget) && (
+                    <p className="text-xs text-amber-500 leading-snug" data-testid="text-budget-warning">
+                      Minimum coverage requires a premium above the selected budget.
+                    </p>
+                  )}
                 </div>
 
                 <SelectGroup
@@ -595,10 +600,16 @@ export default function Home() {
             {/* Risk Score */}
             <Card className="border-card-border">
               <CardContent className="px-4 py-4 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-semibold text-foreground uppercase tracking-wider">
-                    Risk Score
-                  </p>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-semibold text-foreground uppercase tracking-wider">
+                      Risk Score
+                    </p>
+                    <Badge className="bg-muted text-muted-foreground text-[10px] font-medium px-1.5 py-0.5 no-default-active-elevate">
+                      <FlaskConical className="w-3 h-3 mr-1 inline" />
+                      Heuristic (calibration-ready)
+                    </Badge>
+                  </div>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap justify-end">
                     <span className="tabular-nums" data-testid="text-transit-days">
                       Transit: <span className="text-foreground font-semibold">{result.transitDays}d</span>
@@ -606,12 +617,38 @@ export default function Home() {
                     <span className="tabular-nums" data-testid="text-base-prob">
                       Base Prob: <span className="text-foreground font-semibold">{fmtPct(result.baseDelayProbability)}</span>
                     </span>
-                    <span className="tabular-nums">
-                      Exp. Delay: <span className="text-foreground font-semibold">{fmt(result.expectedDelayDays, 1)}d</span>
+                    <span className="tabular-nums flex items-center gap-1">
+                      Delay Severity: <span className="text-foreground font-semibold">{fmt(result.expectedDelayDays, 1)}d</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="w-3 h-3 text-muted-foreground cursor-help shrink-0" />
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-56 text-xs">
+                          Modeled Delay Severity (used for payout estimation only). This is a modeled estimate used to approximate payout percentage after a trigger. Actual delay days may differ.
+                        </TooltipContent>
+                      </Tooltip>
                     </span>
                   </div>
                 </div>
                 <RiskScoreBar score={result.riskScore} />
+
+                <Collapsible>
+                  <CollapsibleTrigger asChild>
+                    <button className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="button-model-assumptions">
+                      <Info className="w-3 h-3" />
+                      <span>Model Assumptions</span>
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <ul className="mt-2 space-y-1 text-xs text-muted-foreground list-disc pl-4">
+                      <li>Base delay probability ranges from 5% (score 0) to 60% (score 100)</li>
+                      <li>Final trigger probability is adjusted by trigger-day multipliers (6d: 1.00, 8d: 0.78, 10d: 0.62)</li>
+                      <li>Probability is capped at 85% maximum</li>
+                      <li>Delay severity is a modeled value for payout estimation, not a forecast</li>
+                    </ul>
+                  </CollapsibleContent>
+                </Collapsible>
               </CardContent>
             </Card>
 

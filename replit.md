@@ -56,6 +56,14 @@ A fully client-side, browser-based tool that estimates delay probability, expect
 - Risk tier (Low / Medium / High, default High)
 - Advanced (collapsible): port congestion ×3, season risk, route risk, carrier reliability, buffer tightness
 
+## UI Notes
+
+- "Expected Delay" renamed to "Delay Severity" throughout UI — it's a modeled value for payout estimation only, with tooltip clarification
+- Budget slider shows warning when minimum coverage premium exceeds selected budget
+- "Model Assumptions" collapsible section in Risk Score card explains probability mapping and caps
+- "Heuristic (calibration-ready)" badge on Risk Score card for future-proofing
+- Trigger cards stack vertically on mobile (`grid-cols-1`), 3-column on desktop (`sm:grid-cols-3`)
+
 ## Dependencies
 
 No additional packages installed beyond the base template.
