@@ -286,3 +286,27 @@
     inset: -1px;
   }
 }
+
+/* ── Print stylesheet for shipment reports ─────────────────────────────────── */
+@media print {
+  html, body {
+    background: white !important;
+    color: black !important;
+  }
+  /* Force light palette for printing so report is readable on paper */
+  :root, .dark {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --border: 0 0% 80%;
+    --muted: 0 0% 95%;
+    --muted-foreground: 0 0% 35%;
+  }
+  .print\:hidden { display: none !important; }
+  /* Avoid splitting cards across pages */
+  .recharts-wrapper, [class*="rounded"][class*="border"] {
+    page-break-inside: avoid;
+  }
+  a { text-decoration: none; color: inherit; }
+}

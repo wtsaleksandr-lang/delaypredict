@@ -39,11 +39,12 @@ import {
 } from "@/lib/calculations";
 
 const DEFAULT_INPUTS: CalcInputs = {
+  mode: "ocean",
   originPort: "",
   destinationPort: "",
   etd: "",
   eta: "",
-  transshipments: 1,
+  transshipments: 0,
   budget: 100,
   riskTier: "High",
   originCongestion: "Med",
@@ -290,23 +291,7 @@ export default function Home() {
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border bg-card sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center shrink-0">
-              <Ship className="w-4 h-4 text-primary-foreground" />
-            </div>
-            <span className="font-bold text-foreground tracking-tight text-lg">DelayPredict</span>
-          </div>
-          <Separator orientation="vertical" className="h-5" />
-          <span className="text-xs text-muted-foreground hidden sm:block">
-            Ocean Freight Delay Risk Calculator
-          </span>
-        </div>
-      </header>
-
+    <div>
       <div className="max-w-6xl mx-auto px-4 py-6 lg:py-8">
         <div className="flex flex-col lg:flex-row gap-6">
 
