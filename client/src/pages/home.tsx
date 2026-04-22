@@ -22,7 +22,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ChevronDown, ChevronUp, Info, Ship, TrendingUp, AlertTriangle, ShieldCheck, Minus, FlaskConical } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Ship, Plane, TrendingUp, AlertTriangle, ShieldCheck, Minus, FlaskConical, HelpCircle } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   calculate,
   type CalcInputs,
@@ -54,7 +55,23 @@ const DEFAULT_INPUTS: CalcInputs = {
   routeRisk: "Med",
   carrierReliability: "Avg",
   bufferTightness: "Normal",
+  hasLayover: false,
+  weatherRisk: "Med",
+  slotPressure: "Med",
+  airlineReliability: "Avg",
 };
+
+// Reusable help marker — hover/tap the (?) to see an explanation.
+function Help({ text }: { text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <HelpCircle className="w-3 h-3 text-muted-foreground/70 hover:text-foreground cursor-help shrink-0" />
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-xs text-xs leading-relaxed">{text}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 function RiskScoreBar({ score }: { score: number }) {
   const color =
@@ -102,9 +119,11 @@ function RecommendationBadge({ rec }: { rec: "INSURE" | "OPTIONAL" | "SKIP" }) {
 function TriggerCard({
   result,
   isBest,
+  unit,
 }: {
   result: TriggerResult;
   isBest: boolean;
+  unit: "day" | "hour";
 }) {
   const Icon =
     result.recommendation === "INSURE"
@@ -135,7 +154,7 @@ function TriggerCard({
           />
           <div>
             <p className="text-sm font-bold text-foreground leading-none">
-              {result.trigger}-Day Trigger
+              {result.trigger}-{unit === "hour" ? "Hour" : "Day"} Trigger
             </p>
             {isBest && (
               <p className="text-xs text-primary mt-0.5 font-medium">Best EV</p>
@@ -298,6 +317,14 @@ export default function Home() {
           {/* ── LEFT PANEL: Inputs ── */}
           <div className="w-full lg:w-[400px] shrink-0 space-y-4">
 
+            {/* Mode toggle */}
+            <Tabs value={inputs.mode} onValueChange={(v) => set("mode", v as any)}>
+              <TabsList className="w-full grid grid-cols-2">
+                <TabsTrigger value="ocean" data-testid="tab-mode-ocean"><Ship className="w-4 h-4 mr-1.5" /> Ocean</TabsTrigger>
+                <TabsTrigger value="air" data-testid="tab-mode-air"><Plane className="w-4 h-4 mr-1.5" /> Air</TabsTrigger>
+              </TabsList>
+            </Tabs>
+
             {/* Routing */}
             <Card className="border-card-border">
               <CardHeader className="pb-3 pt-4 px-4">
@@ -348,20 +375,23 @@ export default function Home() {
                     />
                   </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Transshipments</Label>
-                  <Input
-                    data-testid="input-transshipments"
-                    type="number"
-                    min={0}
-                    max={5}
-                    value={inputs.transshipments}
-                    onChange={(e) =>
-                      set("transshipments", Math.max(0, parseInt(e.target.value) || 0))
-                    }
-                    className="h-9 text-sm bg-background"
-                  />
-                </div>
+                {inputs.mode === "ocean" && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Transshipments
+                      <Help text="Number of intermediate ports where cargo is moved from one ship to another. 0 = direct service. Each extra transshipment adds delay risk." />
+                    </Label>
+                    <Input
+                      data-testid="input-transshipments"
+                      type="number"
+                      min={0}
+                      max={5}
+                      value={inputs.transshipments}
+                      onChange={(e) => set("transshipments", Math.min(5, Math.max(0, parseInt(e.target.value) || 0)))}
+                      className="h-9 text-sm bg-background"
+                    />
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -445,63 +475,40 @@ export default function Home() {
                   </button>
                 </CollapsibleTrigger>
                 <CollapsibleContent>
-                  <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
-                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Port Congestion</p>
-                    <div className="grid grid-cols-3 gap-2">
-                      <SelectGroup
-                        label="Origin"
-                        value={inputs.originCongestion}
-                        options={congestionOptions}
-                        onValueChange={(v) => set("originCongestion", v)}
-                        testId="select-origin-congestion"
-                      />
-                      <SelectGroup
-                        label="Transship"
-                        value={inputs.transshipCongestion}
-                        options={congestionOptions}
-                        onValueChange={(v) => set("transshipCongestion", v)}
-                        testId="select-transship-congestion"
-                      />
-                      <SelectGroup
-                        label="Destination"
-                        value={inputs.destCongestion}
-                        options={congestionOptions}
-                        onValueChange={(v) => set("destCongestion", v)}
-                        testId="select-dest-congestion"
-                      />
+                  {inputs.mode === "ocean" ? (
+                    <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
+                      <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5">
+                        Port Congestion
+                        <Help text="How busy the ports are. 'High' means the port is experiencing significant queue times, berth delays, or truck congestion this week." />
+                      </p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <SelectGroup label="Origin" value={inputs.originCongestion} options={congestionOptions} onValueChange={(v) => set("originCongestion", v)} testId="select-origin-congestion" />
+                        {inputs.transshipments > 0 && (
+                          <SelectGroup label="Transship" value={inputs.transshipCongestion} options={congestionOptions} onValueChange={(v) => set("transshipCongestion", v)} testId="select-transship-congestion" />
+                        )}
+                        <SelectGroup label="Destination" value={inputs.destCongestion} options={congestionOptions} onValueChange={(v) => set("destCongestion", v)} testId="select-dest-congestion" />
+                      </div>
+
+                      <Separator className="bg-border/60" />
+
+                      <SelectGroup label="Season Risk" value={inputs.seasonRisk} options={seasonOptions} onValueChange={(v) => set("seasonRisk", v)} testId="select-season-risk" />
+                      <SelectGroup label="Route / Geopolitical Risk" value={inputs.routeRisk} options={routeOptions} onValueChange={(v) => set("routeRisk", v)} testId="select-route-risk" />
+                      <SelectGroup label="Carrier Reliability" value={inputs.carrierReliability} options={carrierOptions} onValueChange={(v) => set("carrierReliability", v)} testId="select-carrier-reliability" />
+                      <SelectGroup label="Schedule Buffer Tightness" value={inputs.bufferTightness} options={bufferOptions} onValueChange={(v) => set("bufferTightness", v)} testId="select-buffer-tightness" />
                     </div>
-
-                    <Separator className="bg-border/60" />
-
-                    <SelectGroup
-                      label="Season Risk"
-                      value={inputs.seasonRisk}
-                      options={seasonOptions}
-                      onValueChange={(v) => set("seasonRisk", v)}
-                      testId="select-season-risk"
-                    />
-                    <SelectGroup
-                      label="Route / Geopolitical Risk"
-                      value={inputs.routeRisk}
-                      options={routeOptions}
-                      onValueChange={(v) => set("routeRisk", v)}
-                      testId="select-route-risk"
-                    />
-                    <SelectGroup
-                      label="Carrier Reliability"
-                      value={inputs.carrierReliability}
-                      options={carrierOptions}
-                      onValueChange={(v) => set("carrierReliability", v)}
-                      testId="select-carrier-reliability"
-                    />
-                    <SelectGroup
-                      label="Schedule Buffer Tightness"
-                      value={inputs.bufferTightness}
-                      options={bufferOptions}
-                      onValueChange={(v) => set("bufferTightness", v)}
-                      testId="select-buffer-tightness"
-                    />
-                  </div>
+                  ) : (
+                    <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" id="layover-qc" checked={!!inputs.hasLayover} onChange={(e) => set("hasLayover", e.target.checked)} className="w-4 h-4" />
+                        <Label htmlFor="layover-qc" className="text-sm">Has layover / transit stop</Label>
+                        <Help text="Air cargo routed through an intermediate hub has meaningfully higher delay risk than a direct flight." />
+                      </div>
+                      <SelectGroup label="Weather Risk" value={inputs.weatherRisk ?? "Med"} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Medium" }, { value: "High", label: "High" }]} onValueChange={(v) => set("weatherRisk", v)} />
+                      <SelectGroup label="Slot / Capacity Pressure" value={inputs.slotPressure ?? "Med"} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Medium" }, { value: "High", label: "High" }]} onValueChange={(v) => set("slotPressure", v)} />
+                      <SelectGroup label="Airline Reliability" value={inputs.airlineReliability ?? "Avg"} options={[{ value: "High", label: "High" }, { value: "Avg", label: "Average" }, { value: "Low", label: "Low" }]} onValueChange={(v) => set("airlineReliability", v)} />
+                      <SelectGroup label="Route / Overflight Risk" value={inputs.routeRisk} options={routeOptions} onValueChange={(v) => set("routeRisk", v)} />
+                    </div>
+                  )}
                 </CollapsibleContent>
               </Collapsible>
             </Card>
@@ -521,7 +528,7 @@ export default function Home() {
                     <div className="flex items-center gap-3 flex-wrap">
                       <RecommendationBadge rec={result.best.recommendation} />
                       <span className="text-xl font-bold text-foreground" data-testid="text-best-trigger">
-                        {result.best.trigger}-Day Trigger
+                        {result.best.trigger}-{result.triggerUnit === "hour" ? "Hour" : "Day"} Trigger
                       </span>
                     </div>
                     <p className="text-sm text-muted-foreground pt-0.5">
@@ -648,6 +655,7 @@ export default function Home() {
                     key={t.trigger}
                     result={t}
                     isBest={t.trigger === result.best.trigger}
+                    unit={result.triggerUnit}
                   />
                 ))}
               </div>
@@ -657,7 +665,7 @@ export default function Home() {
             <Card className="border-card-border">
               <CardHeader className="pb-2 pt-4 px-4">
                 <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  Insurance Rate Reference
+                  Insurance Rate Reference {inputs.mode === "air" ? "— Air" : "— Ocean"}
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-4 pb-4">
@@ -672,15 +680,18 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {[
-                        { trigger: "10-Day", low: "1.08%", med: "1.22%", high: "1.37%" },
-                        { trigger: "8-Day", low: "1.40%", med: "1.57%", high: "1.77%" },
-                        { trigger: "6-Day", low: "2.39%", med: "2.68%", high: "3.02%" },
-                      ].map((row, i) => (
-                        <tr
-                          key={row.trigger}
-                          className={i < 2 ? "border-b border-border" : ""}
-                        >
+                      {(inputs.mode === "air"
+                        ? [
+                            { trigger: "48-Hour", low: "0.90%", med: "1.10%", high: "1.35%" },
+                            { trigger: "24-Hour", low: "1.50%", med: "1.85%", high: "2.25%" },
+                            { trigger: "12-Hour", low: "2.60%", med: "3.10%", high: "3.80%" },
+                          ]
+                        : [
+                            { trigger: "10-Day", low: "1.08%", med: "1.22%", high: "1.37%" },
+                            { trigger: "8-Day", low: "1.40%", med: "1.57%", high: "1.77%" },
+                            { trigger: "6-Day", low: "2.39%", med: "2.68%", high: "3.02%" },
+                          ]).map((row, i, arr) => (
+                        <tr key={row.trigger} className={i < arr.length - 1 ? "border-b border-border" : ""}>
                           <td className="px-3 py-2 font-medium text-foreground">{row.trigger}</td>
                           <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{row.low}</td>
                           <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{row.med}</td>

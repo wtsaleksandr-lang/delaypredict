@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startTrackingPoller } from "./jobs/trackingPoller";
+import { startIntelScheduler } from "./intel/scraper";
 
 const app = express();
 const httpServer = createServer(app);
@@ -97,5 +98,6 @@ app.use((req, res, next) => {
   httpServer.listen(listenOpts, () => {
     log(`serving on port ${port}`);
     startTrackingPoller();
+    startIntelScheduler();
   });
 })();

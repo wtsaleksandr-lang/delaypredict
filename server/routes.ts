@@ -4,6 +4,9 @@ import { storage } from "./storage";
 import { insertShipmentSchema, updateShipmentSchema, type Shipment } from "@shared/schema";
 import { resolveTracking, listProviders } from "./tracking";
 import { ProviderError, type NormalizedTracking } from "./tracking/types";
+import { generatePersonalRef } from "./lib/refGenerator";
+import { detectRiskFactors, readIntelCache } from "./intel";
+import { runIntelRefresh } from "./intel/scraper";
 
 function applyTrackingToShipment(s: Shipment, tr: NormalizedTracking): Partial<Shipment> {
   // Compute delay days vs ETA if we have an actual_arrival
@@ -65,8 +68,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/shipments", async (req, res, next) => {
     try {
       const parsed = insertShipmentSchema.parse(req.body);
+      if (!parsed.personal_ref || !parsed.personal_ref.trim()) {
+        parsed.personal_ref = generatePersonalRef();
+      }
       const created = await storage.createShipment(parsed);
       res.status(201).json(created);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Auto-detect risk factors from intel cache (used by the form)
+  app.post("/api/risk/detect", async (req, res, next) => {
+    try {
+      const { mode, origin, destination, etd, eta, carrierScac } = req.body ?? {};
+      const detected = await detectRiskFactors({ mode, origin, destination, etd, eta, carrierScac });
+      res.json(detected);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Intel cache inspection + manual refresh trigger
+  app.get("/api/intel", async (_req, res, next) => {
+    try {
+      res.json(await readIntelCache());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/intel/refresh", async (_req, res, next) => {
+    try {
+      const result = await runIntelRefresh();
+      res.json(result);
     } catch (err) {
       next(err);
     }
