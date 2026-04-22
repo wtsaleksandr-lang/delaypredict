@@ -2,33 +2,39 @@ import type { TrackingProvider, TrackingQuery, NormalizedTracking, TrackingMiles
 import { ProviderError } from "../types";
 
 /**
- * OpenSky Network — completely free, no signup, no key.
- * Returns recent flight data by callsign (e.g. LH8400) for cargo-on-passenger-flight tracking.
+ * OpenSky Network — free flight-status data.
  *
- *   Base:          https://opensky-network.org/api
- *   Auth:          none (anonymous is rate-limited but works for low volume)
- *   Coverage:      Any flight with ADS-B, which is ~every commercial flight worldwide.
+ *   Signup:        https://opensky-network.org (Account → Create API client)
+ *   Auth:          OAuth2 client_credentials (basic auth deprecated March 2026)
+ *   Free quota:    4000 credits / day on the default role
  *
- * Limits: anonymous gets a small daily quota; consider registering (still free)
- * for higher limits and set OPENSKY_USER + OPENSKY_PASS to use Basic auth.
+ * Env vars:
+ *   OPENSKY_CLIENT_ID       (e.g. "ops08@example.ca-api-client")
+ *   OPENSKY_CLIENT_SECRET
+ *
+ * Token endpoint:
+ *   https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token
  */
-const BASE = "https://opensky-network.org/api";
+const AUTH_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+const API = "https://opensky-network.org/api";
 
-function basicAuthHeader(user?: string, pass?: string): Record<string, string> {
-  if (!user || !pass) return {};
-  const b64 = Buffer.from(`${user}:${pass}`).toString("base64");
-  return { Authorization: `Basic ${b64}` };
+interface TokenBundle {
+  token: string;
+  expiresAt: number; // epoch ms
 }
 
 export class OpenSkyProvider implements TrackingProvider {
   name = "opensky";
+  private cached: TokenBundle | null = null;
+
   constructor(
-    private readonly user = process.env.OPENSKY_USER,
-    private readonly pass = process.env.OPENSKY_PASS,
+    private readonly clientId = process.env.OPENSKY_CLIENT_ID,
+    private readonly clientSecret = process.env.OPENSKY_CLIENT_SECRET,
   ) {}
 
   isConfigured() {
-    // Anonymous works; this provider is always considered "configured" so long as it can be called.
+    // Anonymous /states/all still works for low volume; auth just raises quotas.
+    // Return true so the adapter is always tried for air queries.
     return true;
   }
 
@@ -36,37 +42,75 @@ export class OpenSkyProvider implements TrackingProvider {
     return q.mode === "air" && !!q.flightNumber;
   }
 
+  private async getToken(): Promise<string | null> {
+    if (!this.clientId || !this.clientSecret) return null;
+    if (this.cached && this.cached.expiresAt > Date.now() + 30_000) {
+      return this.cached.token;
+    }
+    const body = new URLSearchParams();
+    body.set("grant_type", "client_credentials");
+    body.set("client_id", this.clientId);
+    body.set("client_secret", this.clientSecret);
+
+    const res = await fetch(AUTH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ProviderError(`OpenSky auth ${res.status}: ${text.slice(0, 140)}`, res.status);
+    }
+    const json: any = await res.json();
+    if (!json.access_token) throw new ProviderError("OpenSky auth: no access_token in response");
+    this.cached = {
+      token: json.access_token,
+      expiresAt: Date.now() + (Number(json.expires_in) || 1800) * 1000,
+    };
+    return this.cached.token;
+  }
+
+  private async authedHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    const token = await this.getToken().catch((err) => {
+      console.warn("[opensky] token fetch failed, falling back to anonymous:", err instanceof Error ? err.message : err);
+      return null;
+    });
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
+
   async fetch(q: TrackingQuery): Promise<NormalizedTracking> {
     if (!q.flightNumber) throw new ProviderError("OpenSky requires a flight number");
-
-    // Callsigns in OpenSky are ICAO (3-letter airline + digits). Accept either IATA (e.g. LH8400) or ICAO;
-    // this is a best-effort pass-through — improve by maintaining an IATA→ICAO airline map.
     const callsign = q.flightNumber.replace(/\s+/g, "").toUpperCase();
 
-    // Time window: last 3 days
     const end = Math.floor(Date.now() / 1000);
     const begin = end - 3 * 24 * 3600;
+    const headers = await this.authedHeaders();
 
-    const headers = { Accept: "application/json", ...basicAuthHeader(this.user, this.pass) };
-
-    // Try matching by callsign over the last 3 days via /flights/all (only reachable when authed, actually);
-    // fallback to /states/all filtered by callsign.
+    // Try /flights/all first
     let flights: any[] = [];
     try {
-      const url = `${BASE}/flights/all?begin=${begin}&end=${end}`;
-      const r = await fetch(url, { headers });
+      const r = await fetch(`${API}/flights/all?begin=${begin}&end=${end}`, { headers });
       if (r.ok) {
         const all = await r.json();
-        flights = (Array.isArray(all) ? all : []).filter((f: any) => (f.callsign || "").trim().toUpperCase() === callsign);
+        flights = (Array.isArray(all) ? all : []).filter(
+          (f: any) => (f.callsign || "").trim().toUpperCase() === callsign,
+        );
+      } else if (r.status === 401) {
+        throw new ProviderError("OpenSky 401 — check OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET", 401);
       }
-    } catch {
-      /* ignore; try states next */
+    } catch (err) {
+      if (err instanceof ProviderError && err.status === 401) throw err;
+      /* fall through */
     }
 
     if (flights.length === 0) {
-      // Fallback: current airborne states
-      const r = await fetch(`${BASE}/states/all`, { headers });
-      if (!r.ok) throw new ProviderError(`OpenSky ${r.status}`, r.status);
+      const r = await fetch(`${API}/states/all`, { headers });
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        throw new ProviderError(`OpenSky ${r.status}: ${text.slice(0, 120)}`, r.status);
+      }
       const data: any = await r.json();
       const states: any[] = data?.states ?? [];
       const match = states.find((s) => (s[1] || "").trim().toUpperCase() === callsign);
@@ -94,7 +138,6 @@ export class OpenSkyProvider implements TrackingProvider {
       };
     }
 
-    // Use the most recent matching flight
     flights.sort((a, b) => (b.firstSeen ?? 0) - (a.firstSeen ?? 0));
     const f = flights[0];
     const dep = f.firstSeen ? new Date(f.firstSeen * 1000) : null;
