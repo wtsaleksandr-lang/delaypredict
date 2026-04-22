@@ -1,6 +1,7 @@
 import { detectSeasonRisk, type SeasonRisk } from "./seasonRules";
 import { detectCarrierReliability, type ReliabilityHit } from "./carrierReliability";
 import { detectScheduleBuffer, type BufferHit } from "./scheduleBuffer";
+import { detectLlmRouteRisk, isLlmConfigured } from "./llmOracle";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -94,8 +95,24 @@ export async function detectRiskFactors(q: IntelQuery): Promise<RiskFactorDetect
     }
   }
 
-  // Route / geopolitical risk — from intel cache route rules
-  if (cache?.routes && (q.origin || q.destination)) {
+  // Route / geopolitical risk — layered:
+  //   1. LLM route oracle (Claude Haiku) — most specific, if ANTHROPIC_API_KEY set.
+  //      Cached per route+week so we pay ~once per route per week.
+  //   2. Intel scraper cache — recent scraped news mapped to route keywords.
+  // Whichever returns highest confidence wins; typically LLM > scraper > none.
+  if (q.origin && q.destination) {
+    const llm = await detectLlmRouteRisk({ origin: q.origin, destination: q.destination, etd: q.etd });
+    if (llm) {
+      const level: "Low" | "Med" | "High" = llm.level === "Low" ? "Low" : llm.level === "High" ? "High" : "Med";
+      out.route = {
+        value: level,
+        rationale: llm.rationale + (llm.sourceEvidence?.length ? ` · Evidence: ${llm.sourceEvidence.slice(0, 2).join("; ")}` : ""),
+        source: `Claude Haiku (${llm.model}, confidence ${(llm.confidence * 100).toFixed(0)}%)`,
+        asOf: llm.asOf,
+      };
+    }
+  }
+  if (!out.route && cache?.routes && (q.origin || q.destination)) {
     const haystack = `${q.origin ?? ""} ${q.destination ?? ""}`.toLowerCase();
     const hit = cache.routes.find((r) => haystack.includes(r.match.toLowerCase()));
     if (hit) {

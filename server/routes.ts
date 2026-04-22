@@ -7,6 +7,7 @@ import { ProviderError, type NormalizedTracking } from "./tracking/types";
 import { generatePersonalRef } from "./lib/refGenerator";
 import { detectRiskFactors, readIntelCache } from "./intel";
 import { runIntelRefresh } from "./intel/scraper";
+import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
 
 function applyTrackingToShipment(s: Shipment, tr: NormalizedTracking): Partial<Shipment> {
   // Compute delay days vs ETA if we have an actual_arrival
@@ -101,6 +102,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const result = await runIntelRefresh();
       res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // LLM oracle admin: status + cache wipe
+  app.get("/api/intel/llm", (_req, res) => {
+    res.json({ configured: isLlmConfigured(), model: "claude-haiku-4-5" });
+  });
+  app.post("/api/intel/llm/clear", async (_req, res, next) => {
+    try {
+      const n = await clearLlmCache();
+      res.json({ cleared: n });
     } catch (err) {
       next(err);
     }
