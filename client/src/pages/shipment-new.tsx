@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronDown, Ship, Plane, Save, Loader2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ChevronDown, Ship, Plane, Save, Loader2, HelpCircle, Sparkles, Lock, Unlock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   calculate,
@@ -56,12 +57,7 @@ interface IdFields {
   carrier_scac: string;
 }
 const ID_DEFAULTS: IdFields = {
-  personal_ref: "",
-  booking_number: "",
-  container_number: "",
-  awb_number: "",
-  flight_number: "",
-  carrier_scac: "",
+  personal_ref: "", booking_number: "", container_number: "", awb_number: "", flight_number: "", carrier_scac: "",
 };
 
 interface PnLFields {
@@ -71,12 +67,83 @@ interface PnLFields {
 }
 const PNL_DEFAULTS: PnLFields = { cost: "", sale_price: "", insurance_chosen_trigger: null };
 
+// Which risk factors have been manually overridden — by default all are "auto" (oracle-driven if data is available).
+type OverrideKey = "season" | "route" | "carrier" | "buffer" | "originCongestion" | "destCongestion";
+type OverrideMap = Record<OverrideKey, boolean>;
+const OVERRIDE_DEFAULTS: OverrideMap = {
+  season: false, route: false, carrier: false, buffer: false, originCongestion: false, destCongestion: false,
+};
+
+interface Detection {
+  season?: { value: "Low" | "Med" | "High"; rationale: string; source: string };
+  carrier?: { value: "High" | "Avg" | "Low"; rationale: string; source?: string; asOf?: string };
+  buffer?: { value: "Loose" | "Normal" | "Tight"; rationale: string; confidence: string; sampleSize: number; source: string };
+  port_origin?: { value: "Low" | "Med" | "High"; rationale: string; source: string; asOf?: string };
+  port_destination?: { value: "Low" | "Med" | "High"; rationale: string; source: string; asOf?: string };
+  route?: { value: "Low" | "Med" | "High"; rationale: string; source: string; asOf?: string };
+  intelAsOf?: string;
+}
+
+// Compact (?) helper
+function Help({ text }: { text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <HelpCircle className="w-3 h-3 text-muted-foreground/70 hover:text-foreground cursor-help shrink-0" />
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-xs text-xs leading-relaxed">{text}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// "(auto — rationale)" chip next to a risk-factor label
+function AutoBadge({ rationale, source, asOf, onOverride }: { rationale: string; source?: string; asOf?: string; onOverride: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onOverride}
+          className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 hover:bg-primary/20 border border-primary/30 rounded px-1.5 py-0.5 cursor-pointer"
+        >
+          <Sparkles className="w-2.5 h-2.5" /> auto
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs text-xs">
+        <p><strong>Auto-detected:</strong> {rationale}</p>
+        {source && <p className="text-[10px] text-muted-foreground mt-1">Source: {source}{asOf ? ` (${asOf})` : ""}</p>}
+        <p className="text-[10px] text-primary mt-1">Click the chip to override manually.</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ManualBadge({ onRevert }: { onRevert: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onRevert}
+      className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground bg-muted hover:bg-muted/80 border border-border rounded px-1.5 py-0.5 cursor-pointer"
+      title="Click to revert to auto-detection"
+    >
+      <Lock className="w-2.5 h-2.5" /> manual
+    </button>
+  );
+}
+
 function Sel<T extends string>({
-  label, value, onChange, options,
-}: { label: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; }) {
+  label, value, onChange, options, help, chip,
+}: {
+  label: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[];
+  help?: string; chip?: React.ReactNode;
+}) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+        {label}
+        {help && <Help text={help} />}
+        {chip}
+      </Label>
       <Select value={value} onValueChange={(v) => onChange(v as T)}>
         <SelectTrigger className="h-9 text-sm bg-background"><SelectValue /></SelectTrigger>
         <SelectContent>{options.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
@@ -93,27 +160,66 @@ export default function ShipmentNew() {
   const [inputs, setInputs] = useState<CalcInputs>(DEFAULTS);
   const [ids, setIds] = useState<IdFields>(ID_DEFAULTS);
   const [pnl, setPnl] = useState<PnLFields>(PNL_DEFAULTS);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  const result = useMemo(() => calculate(inputs), [inputs]);
-  const colors = riskColor(result.riskScore);
-  const derivedTier = deriveRiskTier(result.riskScore);
-  // Auto-sync risk tier with computed score (the two used to be unrelated — confusing)
-  if (inputs.riskTier !== derivedTier) {
-    queueMicrotask(() => setInputs((p) => ({ ...p, riskTier: derivedTier })));
-  }
+  const [advancedOpen, setAdvancedOpen] = useState(true);
+  const [overrides, setOverrides] = useState<OverrideMap>(OVERRIDE_DEFAULTS);
+  const [detection, setDetection] = useState<Detection | null>(null);
 
   function set<K extends keyof CalcInputs>(k: K, v: CalcInputs[K]) {
     setInputs((p) => ({ ...p, [k]: v }));
   }
+  function toggleOverride(key: OverrideKey) {
+    setOverrides((p) => ({ ...p, [key]: !p[key] }));
+  }
+
+  // Ask the server for auto-detection whenever the relevant inputs change
+  useEffect(() => {
+    const body = {
+      mode: inputs.mode,
+      origin: inputs.originPort || null,
+      destination: inputs.destinationPort || null,
+      etd: inputs.etd || null,
+      eta: inputs.eta || null,
+      carrierScac: ids.carrier_scac || null,
+    };
+    if (!body.origin && !body.destination && !body.etd) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiRequest("POST", "/api/risk/detect", body);
+        const data = await r.json();
+        if (!cancelled) setDetection(data);
+      } catch { /* silent — form still works manually */ }
+    })();
+    return () => { cancelled = true; };
+  }, [inputs.mode, inputs.originPort, inputs.destinationPort, inputs.etd, inputs.eta, ids.carrier_scac]);
+
+  // Apply auto-detected values to inputs (only for factors not manually overridden)
+  useEffect(() => {
+    if (!detection) return;
+    setInputs((prev) => {
+      const next = { ...prev };
+      if (!overrides.season && detection.season) next.seasonRisk = detection.season.value;
+      if (!overrides.route && detection.route) next.routeRisk = detection.route.value;
+      if (!overrides.carrier && detection.carrier) next.carrierReliability = detection.carrier.value;
+      if (!overrides.buffer && detection.buffer) next.bufferTightness = detection.buffer.value;
+      if (!overrides.originCongestion && detection.port_origin) next.originCongestion = detection.port_origin.value;
+      if (!overrides.destCongestion && detection.port_destination) next.destCongestion = detection.port_destination.value;
+      return next;
+    });
+  }, [detection, overrides]);
+
+  const result = useMemo(() => calculate(inputs), [inputs]);
+  const colors = riskColor(result.riskScore);
+  const derivedTier = deriveRiskTier(result.riskScore);
+  if (inputs.riskTier !== derivedTier) {
+    queueMicrotask(() => setInputs((p) => ({ ...p, riskTier: derivedTier })));
+  }
 
   const create = useMutation({
     mutationFn: async () => {
-      const chosen = pnl.insurance_chosen_trigger
-        ? result.triggers.find((t) => t.trigger === pnl.insurance_chosen_trigger)
-        : null;
+      const chosen = pnl.insurance_chosen_trigger ? result.triggers.find((t) => t.trigger === pnl.insurance_chosen_trigger) : null;
       const body = {
-        personal_ref: ids.personal_ref || null,
+        personal_ref: ids.personal_ref || null, // server auto-generates if blank
         mode: inputs.mode,
         booking_number: ids.booking_number || null,
         container_number: ids.container_number || null,
@@ -124,7 +230,7 @@ export default function ShipmentNew() {
         destination: inputs.destinationPort || null,
         etd: inputs.etd || null,
         eta: inputs.eta || null,
-        inputs_json: inputs,
+        inputs_json: { ...inputs, overrides, detection },
         result_json: result,
         risk_score: result.riskScore,
         base_delay_probability: result.baseDelayProbability,
@@ -143,7 +249,7 @@ export default function ShipmentNew() {
     },
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["/api/shipments"] });
-      toast({ title: "Shipment saved", description: created.personal_ref || "New shipment created" });
+      toast({ title: "Shipment saved", description: created.personal_ref });
       navigate(`/shipments/${created.id}`);
     },
     onError: (err: any) => {
@@ -152,16 +258,20 @@ export default function ShipmentNew() {
   });
 
   const isAir = inputs.mode === "air";
-  const tierOpts: { value: any; label: string }[] = [
-    { value: "Low", label: "Low" }, { value: "Medium", label: "Medium" }, { value: "High", label: "High" },
-  ];
+
+  // Label chip builder: shows (auto) or (manual) based on override state
+  const chipFor = (key: OverrideKey, det?: { rationale: string; source?: string; asOf?: string }) => {
+    if (overrides[key]) return <ManualBadge onRevert={() => toggleOverride(key)} />;
+    if (det) return <AutoBadge rationale={det.rationale} source={det.source} asOf={det.asOf} onOverride={() => toggleOverride(key)} />;
+    return null;
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">New Shipment</h1>
-          <p className="text-sm text-muted-foreground">Add identifiers, route &amp; risk inputs. P&amp;L and risk recommendation are computed live.</p>
+          <p className="text-sm text-muted-foreground">Risk factors auto-fill from the oracle when possible. Click any <strong className="text-primary">auto</strong> chip to override.</p>
         </div>
         <Button onClick={() => create.mutate()} disabled={create.isPending} data-testid="button-save-shipment">
           {create.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
@@ -177,45 +287,61 @@ export default function ShipmentNew() {
       </Tabs>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
-        {/* LEFT: form */}
+        {/* LEFT */}
         <div className="space-y-5">
 
           {/* Identifiers */}
           <Card>
             <CardHeader className="pb-3 pt-4 px-4">
-              <CardTitle className="text-sm font-semibold">Identifiers</CardTitle>
+              <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                Identifiers
+                <Help text="All identifier fields are optional. If you leave 'Your Reference' blank, the system will auto-generate one like DP-20260422-A7K9. Container / AWB / Flight numbers are only needed for live tracking." />
+              </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1.5 sm:col-span-2">
-                <Label className="text-xs text-muted-foreground">Your Reference (personal ref)</Label>
-                <Input value={ids.personal_ref} onChange={(e) => setIds((p) => ({ ...p, personal_ref: e.target.value }))} placeholder="e.g. PO-2026-1442" data-testid="input-personal-ref" />
+                <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  Your Reference (personal ref)
+                  <Help text="Your own PO / order / file number. If blank, one will be generated on save (format DP-YYYYMMDD-XXXX)." />
+                </Label>
+                <Input value={ids.personal_ref} onChange={(e) => setIds((p) => ({ ...p, personal_ref: e.target.value }))} placeholder="e.g. PO-2026-1442 (leave blank to auto-generate)" data-testid="input-personal-ref" />
               </div>
               {!isAir ? (
                 <>
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Booking Number</Label>
-                    <Input value={ids.booking_number} onChange={(e) => setIds((p) => ({ ...p, booking_number: e.target.value }))} placeholder="e.g. 12345678" data-testid="input-booking-number" />
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Booking Number <Help text="The carrier's booking reference for this shipment. Optional; used for tracking lookups when you don't have the container number yet." />
+                    </Label>
+                    <Input value={ids.booking_number} onChange={(e) => setIds((p) => ({ ...p, booking_number: e.target.value }))} placeholder="optional — e.g. 12345678" data-testid="input-booking-number" />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Container Number</Label>
-                    <Input value={ids.container_number} onChange={(e) => setIds((p) => ({ ...p, container_number: e.target.value.toUpperCase() }))} placeholder="e.g. MSKU1234567" className="font-mono" data-testid="input-container-number" />
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Container Number <Help text="11-character ISO container ID (e.g. MSKU1234567). Optional; required for automated tracking." />
+                    </Label>
+                    <Input value={ids.container_number} onChange={(e) => setIds((p) => ({ ...p, container_number: e.target.value.toUpperCase() }))} placeholder="optional — e.g. MSKU1234567" className="font-mono" data-testid="input-container-number" />
                   </div>
                 </>
               ) : (
                 <>
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">AWB Number</Label>
-                    <Input value={ids.awb_number} onChange={(e) => setIds((p) => ({ ...p, awb_number: e.target.value }))} placeholder="e.g. 020-12345678" className="font-mono" data-testid="input-awb-number" />
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      AWB Number <Help text="Air waybill number — typically 3 digits (airline prefix) + 8 digits. Optional; needed for cargo-event tracking via 17TRACK." />
+                    </Label>
+                    <Input value={ids.awb_number} onChange={(e) => setIds((p) => ({ ...p, awb_number: e.target.value }))} placeholder="optional — e.g. 020-12345678" className="font-mono" data-testid="input-awb-number" />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Flight Number</Label>
-                    <Input value={ids.flight_number} onChange={(e) => setIds((p) => ({ ...p, flight_number: e.target.value.toUpperCase() }))} placeholder="e.g. LH8400" className="font-mono" data-testid="input-flight-number" />
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Flight Number <Help text="IATA or ICAO flight number (e.g. LH8400). Optional; used with OpenSky for free flight-status tracking." />
+                    </Label>
+                    <Input value={ids.flight_number} onChange={(e) => setIds((p) => ({ ...p, flight_number: e.target.value.toUpperCase() }))} placeholder="optional — e.g. LH8400" className="font-mono" data-testid="input-flight-number" />
                   </div>
                 </>
               )}
               <div className="space-y-1.5 sm:col-span-2">
-                <Label className="text-xs text-muted-foreground">Carrier SCAC (optional, helps route to direct API)</Label>
-                <Input value={ids.carrier_scac} onChange={(e) => setIds((p) => ({ ...p, carrier_scac: e.target.value.toUpperCase() }))} placeholder="MAEU, HLCU, CMDU, MSCU, ONEY…" className="font-mono uppercase" data-testid="input-carrier-scac" />
+                <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  Carrier SCAC <Help text="4-letter Standard Carrier Alpha Code (e.g. MAEU for Maersk, HLCU for Hapag-Lloyd). Optional; lets the app route tracking to the right carrier-direct API and auto-fill reliability." />
+                </Label>
+                <Input value={ids.carrier_scac} onChange={(e) => setIds((p) => ({ ...p, carrier_scac: e.target.value.toUpperCase() }))} placeholder="optional — MAEU, HLCU, CMDU, MSCU, ONEY…" className="font-mono uppercase" data-testid="input-carrier-scac" />
               </div>
             </CardContent>
           </Card>
@@ -251,7 +377,9 @@ export default function ShipmentNew() {
               )}
               {!isAir && (
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Transshipments</Label>
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    Transshipments <Help text="Number of intermediate ports where cargo changes vessels. 0 = direct. Each extra transshipment adds ~6 points to risk score." />
+                  </Label>
                   <Input type="number" min={0} max={5} value={inputs.transshipments}
                     onChange={(e) => set("transshipments", Math.min(5, Math.max(0, parseInt(e.target.value) || 0)))}
                     data-testid="input-transshipments" />
@@ -260,26 +388,32 @@ export default function ShipmentNew() {
             </CardContent>
           </Card>
 
-          {/* Risk inputs */}
+          {/* Risk factors — with auto/manual chips */}
           <Card>
-            <CardHeader className="pb-3 pt-4 px-4">
-              <CardTitle className="text-sm font-semibold">Risk Factors</CardTitle>
+            <CardHeader className="pb-3 pt-4 px-4 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                Risk Factors
+                <Help text="These drive the 0-100 risk score. Factors with an 'auto' chip are auto-filled from the oracle (seasonal rules, carrier reliability table, your historical shipments, intel scraper). Click any chip to override." />
+              </CardTitle>
+              {detection?.intelAsOf && (
+                <span className="text-[10px] text-muted-foreground">Intel: {detection.intelAsOf.slice(0, 10)}</span>
+              )}
             </CardHeader>
             <CardContent className="px-4 pb-4 space-y-3">
               {!isAir ? (
                 <>
                   <div className="grid grid-cols-3 gap-2">
-                    <Sel label="Origin Congestion" value={inputs.originCongestion} onChange={(v) => set("originCongestion", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
+                    <Sel label="Origin Congestion" value={inputs.originCongestion} onChange={(v) => set("originCongestion", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} chip={chipFor("originCongestion", detection?.port_origin)} help="How busy the origin port is this week — longer queue times mean higher delay risk. Auto-filled from weekly intel scraper when available." />
                     {inputs.transshipments > 0 && (
                       <Sel label="Transship" value={inputs.transshipCongestion} onChange={(v) => set("transshipCongestion", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
                     )}
-                    <Sel label="Dest Congestion" value={inputs.destCongestion} onChange={(v) => set("destCongestion", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
+                    <Sel label="Dest Congestion" value={inputs.destCongestion} onChange={(v) => set("destCongestion", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} chip={chipFor("destCongestion", detection?.port_destination)} help="Destination port congestion this week. Same source as origin." />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <Sel label="Season Risk" value={inputs.seasonRisk} onChange={(v) => set("seasonRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
-                    <Sel label="Route Risk" value={inputs.routeRisk} onChange={(v) => set("routeRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
-                    <Sel label="Carrier Reliability" value={inputs.carrierReliability} onChange={(v) => set("carrierReliability", v)} options={[{ value: "High", label: "High" }, { value: "Avg", label: "Avg" }, { value: "Low", label: "Low" }]} />
-                    <Sel label="Schedule Buffer" value={inputs.bufferTightness} onChange={(v) => set("bufferTightness", v)} options={[{ value: "Loose", label: "Loose" }, { value: "Normal", label: "Normal" }, { value: "Tight", label: "Tight" }]} />
+                    <Sel label="Season Risk" value={inputs.seasonRisk} onChange={(v) => set("seasonRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} chip={chipFor("season", detection?.season)} help="Seasonal disruptions — typhoon / hurricane season, CNY closures, winter storms. Auto-computed from ETD + route." />
+                    <Sel label="Route Risk" value={inputs.routeRisk} onChange={(v) => set("routeRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} chip={chipFor("route", detection?.route)} help="Geopolitical / lane-specific disruption (Red Sea, Panama Canal water, strikes, overflight bans). Auto-filled from intel scraper." />
+                    <Sel label="Carrier Reliability" value={inputs.carrierReliability} onChange={(v) => set("carrierReliability", v)} options={[{ value: "High", label: "High" }, { value: "Avg", label: "Avg" }, { value: "Low", label: "Low" }]} chip={chipFor("carrier", detection?.carrier)} help="How often this carrier arrives on time, based on Sea-Intelligence monthly reliability reports. Enter carrier SCAC above to auto-fill." />
+                    <Sel label="Schedule Buffer" value={inputs.bufferTightness} onChange={(v) => set("bufferTightness", v)} options={[{ value: "Loose", label: "Loose" }, { value: "Normal", label: "Normal" }, { value: "Tight", label: "Tight" }]} chip={chipFor("buffer", detection?.buffer)} help="How much slack between ETD and ETA vs your historical transit times for this lane. Needs ≥5 past shipments on the same route to auto-fill." />
                   </div>
                 </>
               ) : (
@@ -287,11 +421,12 @@ export default function ShipmentNew() {
                   <div className="flex items-center gap-2 col-span-2">
                     <input type="checkbox" id="layover" checked={!!inputs.hasLayover} onChange={(e) => set("hasLayover", e.target.checked)} className="w-4 h-4" data-testid="checkbox-layover" />
                     <Label htmlFor="layover" className="text-sm">Has layover / transit stop</Label>
+                    <Help text="Cargo on a direct flight has meaningfully lower delay risk than one going through an intermediate hub." />
                   </div>
-                  <Sel label="Weather Risk" value={inputs.weatherRisk!} onChange={(v) => set("weatherRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
-                  <Sel label="Slot/Capacity Pressure" value={inputs.slotPressure!} onChange={(v) => set("slotPressure", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
-                  <Sel label="Airline Reliability" value={inputs.airlineReliability!} onChange={(v) => set("airlineReliability", v)} options={[{ value: "High", label: "High" }, { value: "Avg", label: "Avg" }, { value: "Low", label: "Low" }]} />
-                  <Sel label="Route Risk" value={inputs.routeRisk} onChange={(v) => set("routeRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} />
+                  <Sel label="Weather Risk" value={inputs.weatherRisk!} onChange={(v) => set("weatherRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} chip={chipFor("season", detection?.season)} help="Weather/season disruption for this route and date. Auto-filled from seasonal rules." />
+                  <Sel label="Slot/Capacity Pressure" value={inputs.slotPressure!} onChange={(v) => set("slotPressure", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} help="How tight available cargo space is at the origin airport this week. Manual only today." />
+                  <Sel label="Airline Reliability" value={inputs.airlineReliability!} onChange={(v) => set("airlineReliability", v)} options={[{ value: "High", label: "High" }, { value: "Avg", label: "Avg" }, { value: "Low", label: "Low" }]} help="Airline on-time performance. Manual for now; auto-fill can be added with OAG data." />
+                  <Sel label="Route Risk" value={inputs.routeRisk} onChange={(v) => set("routeRisk", v)} options={[{ value: "Low", label: "Low" }, { value: "Med", label: "Med" }, { value: "High", label: "High" }]} chip={chipFor("route", detection?.route)} help="Overflight restrictions / geopolitical — e.g. Russia overflight bans, Middle East diversions." />
                 </div>
               )}
             </CardContent>
@@ -300,7 +435,10 @@ export default function ShipmentNew() {
           {/* P&L */}
           <Card>
             <CardHeader className="pb-3 pt-4 px-4">
-              <CardTitle className="text-sm font-semibold">Profit &amp; Loss</CardTitle>
+              <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                Profit &amp; Loss
+                <Help text="Your cost + sale price drive the net P&L tile on the report. Optional — leave blank if you only want the delay-risk analysis." />
+              </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4 grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -312,11 +450,10 @@ export default function ShipmentNew() {
                 <Input type="number" step="0.01" value={pnl.sale_price} onChange={(e) => setPnl((p) => ({ ...p, sale_price: e.target.value }))} placeholder="e.g. 11000" data-testid="input-sale-price" />
               </div>
               <div className="space-y-1.5 col-span-2">
-                <Label className="text-xs text-muted-foreground">Buy insurance? (optional)</Label>
-                <Select
-                  value={pnl.insurance_chosen_trigger?.toString() ?? "none"}
-                  onValueChange={(v) => setPnl((p) => ({ ...p, insurance_chosen_trigger: v === "none" ? null : parseInt(v) }))}
-                >
+                <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  Buy insurance? <Help text="Pick a trigger window to price insurance for this shipment. The premium + recommendation come straight from the model." />
+                </Label>
+                <Select value={pnl.insurance_chosen_trigger?.toString() ?? "none"} onValueChange={(v) => setPnl((p) => ({ ...p, insurance_chosen_trigger: v === "none" ? null : parseInt(v) }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">No insurance</SelectItem>
@@ -331,12 +468,14 @@ export default function ShipmentNew() {
             </CardContent>
           </Card>
 
-          {/* Insurance budget */}
+          {/* Budget slider */}
           <Card>
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
               <CollapsibleTrigger asChild>
                 <button className="w-full flex items-center justify-between px-4 py-3 text-left">
-                  <span className="text-sm font-semibold">Insurance Budget Slider</span>
+                  <span className="text-sm font-semibold flex items-center gap-1.5">
+                    Insurance Budget <Help text="How much you'd pay for a premium. The insured limit is derived from this and the rate." />
+                  </span>
                   <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
                 </button>
               </CollapsibleTrigger>
@@ -370,7 +509,7 @@ export default function ShipmentNew() {
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
                   <p className="text-muted-foreground">Transit</p>
-                  <p className="font-semibold tabular-nums">{fmt(result.transitDays, 1)} {isAir ? "d" : "d"}</p>
+                  <p className="font-semibold tabular-nums">{fmt(result.transitDays, 1)} d</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Base Prob</p>
@@ -390,7 +529,6 @@ export default function ShipmentNew() {
             </CardContent>
           </Card>
 
-          {/* Live P&L preview */}
           {(pnl.cost || pnl.sale_price) && (
             <Card>
               <CardContent className="p-4 space-y-2 text-xs">
@@ -398,9 +536,7 @@ export default function ShipmentNew() {
                 {(() => {
                   const cost = parseFloat(pnl.cost) || 0;
                   const sale = parseFloat(pnl.sale_price) || 0;
-                  const chosen = pnl.insurance_chosen_trigger
-                    ? result.triggers.find((t) => t.trigger === pnl.insurance_chosen_trigger)
-                    : null;
+                  const chosen = pnl.insurance_chosen_trigger ? result.triggers.find((t) => t.trigger === pnl.insurance_chosen_trigger) : null;
                   const premium = chosen?.premium ?? 0;
                   const gross = sale - cost;
                   const expectedLoss = result.best.expectedPayout;
