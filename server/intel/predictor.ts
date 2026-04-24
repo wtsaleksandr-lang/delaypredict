@@ -24,9 +24,10 @@ import type { Shipment } from "@shared/schema";
 import { aisStream, NAV_STATUS_LABELS } from "../tracking/vessels/aisstream";
 import type { VesselPosition, VesselStatic } from "../tracking/vessels/aisstream";
 import { resolvePort, haversineKm } from "./ports";
+import { voyageObserver } from "./voyageObserver";
 
 interface EtaSource {
-  source: "carrier" | "ais_vessel" | "heuristic" | "lane_history";
+  source: "carrier" | "ais_vessel" | "heuristic" | "lane_history" | "lane_global";
   etaIso: string;
   weight: number; // 0..1
   note?: string;
@@ -41,7 +42,7 @@ interface PredictionResult {
 
 // Tunables
 const ARRIVAL_ANCHOR_THRESHOLD_HOURS = 6; // nav=at_anchor near dest for >6h → considered arrived
-const SOURCE_WEIGHTS = { carrier: 0.40, ais_vessel: 0.30, heuristic: 0.20, lane_history: 0.10 };
+const SOURCE_WEIGHTS = { carrier: 0.35, ais_vessel: 0.25, heuristic: 0.15, lane_history: 0.10, lane_global: 0.15 };
 const MIN_LANE_HISTORY_SAMPLES = 5;
 
 // Cache to avoid recomputing too often (per shipment id)
@@ -96,7 +97,7 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
     }
   }
 
-  // 4. Lane history mean
+  // 4. Lane history mean — your own delivered shipments
   if (s.origin && s.destination && s.etd) {
     const etd = new Date(s.etd as any).getTime();
     if (!isNaN(etd)) {
@@ -107,7 +108,20 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
           source: "lane_history",
           etaIso: d.toISOString(),
           weight: SOURCE_WEIGHTS.lane_history,
-          note: `Historical mean transit on this lane: ${meanTransitDays.toFixed(1)}d`,
+          note: `Your historical mean transit on this lane: ${meanTransitDays.toFixed(1)}d`,
+        });
+      }
+
+      // 5. Global lane mean — from the voyage observer (thousands of vessels worldwide)
+      const month = s.etd ? String(s.etd).slice(0, 7) : undefined;
+      const global = voyageObserver.getLaneMean(s.origin, s.destination, month);
+      if (global) {
+        const d = new Date(etd + global.meanDays * 86400_000);
+        sources.push({
+          source: "lane_global",
+          etaIso: d.toISOString(),
+          weight: SOURCE_WEIGHTS.lane_global,
+          note: `Global AIS-observed mean: ${global.meanDays.toFixed(1)}d (${global.source})`,
         });
       }
     }

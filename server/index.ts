@@ -6,6 +6,7 @@ import { startTrackingPoller } from "./jobs/trackingPoller";
 import { startIntelScheduler } from "./intel/scraper";
 import { aisStream } from "./tracking/vessels/aisstream";
 import { startPredictionJobs } from "./jobs/predictionJobs";
+import { voyageObserver } from "./intel/voyageObserver";
 
 const app = express();
 const httpServer = createServer(app);
@@ -102,6 +103,7 @@ app.use((req, res, next) => {
     startTrackingPoller();
     startIntelScheduler();
     aisStream.start().catch((err) => console.error("[aisstream] start failed:", err));
+    voyageObserver.start().catch((err) => console.error("[voyageObserver] start failed:", err));
     startPredictionJobs();
   });
 })();

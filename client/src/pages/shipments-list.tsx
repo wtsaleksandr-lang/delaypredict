@@ -4,7 +4,7 @@ import type { Shipment } from "@shared/schema";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Plus, Ship, Plane, ChevronRight, Package, TrendingUp, TrendingDown, Minus, AlertTriangle, Target } from "lucide-react";
+import { Plus, Ship, Plane, ChevronRight, Package, TrendingUp, TrendingDown, Minus, AlertTriangle, Target, Globe } from "lucide-react";
 import { fmtUSD, fmt, riskColor, riskBand } from "@/lib/calculations";
 
 function StatusPill({ status }: { status: string }) {
@@ -114,6 +114,16 @@ export default function ShipmentsList() {
   const { data: accuracy } = useQuery<{ sampleSize: number; maeDays: number | null; bias: number | null }>({
     queryKey: ["/api/predictions/accuracy"],
   });
+  const { data: observer } = useQuery<{
+    enabled: boolean;
+    vesselsTracked: number;
+    lanesLearned: number;
+    observationsTotal: number;
+    topLanes: Array<{ origin: string; destination: string; count: number; meanDays: number }>;
+  }>({
+    queryKey: ["/api/voyage-observer"],
+    refetchInterval: 30_000,
+  });
 
   // Aggregate KPIs
   const totals = (shipments ?? []).reduce(
@@ -198,6 +208,62 @@ export default function ShipmentsList() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Voyage Observer card — global learning sensor */}
+      {observer && (
+        <Card className="mb-6 border-l-4 border-primary/40">
+          <CardContent className="p-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-md bg-primary/15">
+                  <Globe className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold flex items-center gap-2">
+                    Global Voyage Observer
+                    {observer.enabled ? (
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">on</span>
+                    ) : (
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-500/20 text-zinc-400 border border-zinc-500/40">off</span>
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {observer.enabled
+                      ? "Passively learning from container vessels worldwide via AISStream — feeds the predictor's lane-history source."
+                      : "Disabled. Set ENABLE_VOYAGE_OBSERVER=true and AISSTREAM_API_KEY to learn from global AIS traffic."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 text-right">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Vessels seen</p>
+                  <p className="text-lg font-bold tabular-nums">{observer.vesselsTracked.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Lanes learned</p>
+                  <p className="text-lg font-bold tabular-nums">{observer.lanesLearned.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Voyages observed</p>
+                  <p className="text-lg font-bold tabular-nums text-primary">{observer.observationsTotal.toLocaleString()}</p>
+                </div>
+              </div>
+            </div>
+            {observer.topLanes.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-border">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Top lanes by sample size</p>
+                <div className="flex flex-wrap gap-2">
+                  {observer.topLanes.slice(0, 6).map((l, i) => (
+                    <span key={i} className="text-[11px] bg-muted/50 border border-border rounded px-2 py-0.5 font-mono">
+                      {l.origin} → {l.destination}: <span className="text-foreground font-semibold">{l.meanDays}d</span> <span className="text-muted-foreground">({l.count})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

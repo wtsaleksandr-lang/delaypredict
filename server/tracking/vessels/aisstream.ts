@@ -128,7 +128,21 @@ class AisStreamSubscriber {
     );
   }
 
+  private isGlobalMode(): boolean {
+    return process.env.ENABLE_VOYAGE_OBSERVER === "true";
+  }
+
   private async reload(): Promise<void> {
+    const global = this.isGlobalMode();
+    if (global) {
+      // In global mode we maintain a single open socket that fetches everything;
+      // shipments-set changes don't require reconnection.
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+      this.subscribed = new Set();
+      this.connect();
+      return;
+    }
+    // Per-shipment mode (default): subscribe only to MMSIs the user is tracking.
     const wanted = await this.collectTrackedMmsis();
     const sameSet =
       wanted.size === this.subscribed.size &&
@@ -152,17 +166,20 @@ class AisStreamSubscriber {
     const key = process.env.AISSTREAM_API_KEY!;
     const ws = new WebSocket(ENDPOINT);
     this.ws = ws;
+    const globalMode = this.isGlobalMode();
 
     ws.on("open", () => {
       this.reconnectAttempt = 0;
-      const subscriptionMsg = {
+      const subscriptionMsg: any = {
         APIKey: key,
         BoundingBoxes: [[[-90, -180], [90, 180]]],
-        FiltersShipMMSI: Array.from(this.subscribed),
         FilterMessageTypes: ["PositionReport", "ShipStaticData"],
       };
+      // Only attach MMSI filter in per-shipment mode; global mode receives all vessels.
+      if (!globalMode) subscriptionMsg.FiltersShipMMSI = Array.from(this.subscribed);
       ws.send(JSON.stringify(subscriptionMsg));
-      console.log(`[aisstream] connected; watching ${this.subscribed.size} vessel(s) (position + static)`);
+      const label = globalMode ? "GLOBAL (voyage observer mode)" : `${this.subscribed.size} vessel(s)`;
+      console.log(`[aisstream] connected; watching ${label} (position + static)`);
     });
 
     ws.on("message", (raw) => {
@@ -187,7 +204,9 @@ class AisStreamSubscriber {
     );
     console.log(`[aisstream] socket closed; reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempt})`);
     setTimeout(() => {
-      if (!this.closing && this.subscribed.size > 0) this.connect();
+      if (this.closing) return;
+      // Reconnect if we either have shipments to track or we're in global mode.
+      if (this.subscribed.size > 0 || this.isGlobalMode()) this.connect();
     }, delay);
   }
 
