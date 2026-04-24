@@ -111,7 +111,14 @@ export default function ShipmentsList() {
   const { data: shipments, isLoading } = useQuery<Shipment[]>({
     queryKey: ["/api/shipments"],
   });
-  const { data: accuracy } = useQuery<{ sampleSize: number; maeDays: number | null; bias: number | null }>({
+  const { data: accuracy } = useQuery<{
+    overall: { sampleSize: number; maeDays: number | null; bias: number | null };
+    byMode: {
+      ocean: { sampleSize: number; maeDays: number | null; bias: number | null };
+      air: { sampleSize: number; maeDays: number | null; bias: number | null };
+    };
+    bySource: Array<{ source: string; sampleSize: number; maeDays: number | null; bias: number | null }>;
+  }>({
     queryKey: ["/api/predictions/accuracy"],
   });
   const { data: observer } = useQuery<{
@@ -123,6 +130,16 @@ export default function ShipmentsList() {
   }>({
     queryKey: ["/api/voyage-observer"],
     refetchInterval: 30_000,
+  });
+  const { data: flightObs } = useQuery<{
+    enabled: boolean;
+    hubsPolled: number;
+    routesLearned: number;
+    observationsTotal: number;
+    topRoutes: Array<{ origin: string; destination: string; count: number; meanHours: number }>;
+  }>({
+    queryKey: ["/api/flight-observer"],
+    refetchInterval: 60_000,
   });
 
   // Aggregate KPIs
@@ -198,16 +215,125 @@ export default function ShipmentsList() {
               <Target className="w-3 h-3" /> Predict MAE
             </p>
             <p className={`text-xl font-bold tabular-nums ${
-              accuracy?.maeDays == null ? "text-muted-foreground" :
-              accuracy.maeDays < 1 ? "text-emerald-500" :
-              accuracy.maeDays < 3 ? "text-amber-500" : "text-red-400"
+              accuracy?.overall.maeDays == null ? "text-muted-foreground" :
+              accuracy.overall.maeDays < 1 ? "text-emerald-500" :
+              accuracy.overall.maeDays < 3 ? "text-amber-500" : "text-red-400"
             }`}>
-              {accuracy?.maeDays != null ? `${accuracy.maeDays.toFixed(1)}d` : "—"}
+              {accuracy?.overall.maeDays != null ? `${accuracy.overall.maeDays.toFixed(1)}d` : "—"}
             </p>
-            <p className="text-[10px] text-muted-foreground">{accuracy?.sampleSize ?? 0} delivered</p>
+            <p className="text-[10px] text-muted-foreground">{accuracy?.overall.sampleSize ?? 0} delivered</p>
           </CardContent>
         </Card>
       </div>
+
+      {/* Accuracy breakdown — only render once we have any delivered shipments */}
+      {accuracy && accuracy.overall.sampleSize > 0 && (
+        <Card className="mb-6">
+          <CardContent className="p-4">
+            <p className="text-sm font-semibold flex items-center gap-2 mb-2">
+              <Target className="w-4 h-4 text-primary" /> Prediction Accuracy
+              <span className="text-[10px] text-muted-foreground font-normal">lower MAE = better. bias &gt; 0 = predictions arrive later than reality says</span>
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* By mode */}
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-2">By mode</p>
+                <div className="space-y-1.5">
+                  {(["ocean","air"] as const).map((mode) => {
+                    const m = accuracy.byMode[mode];
+                    const tone = m.maeDays == null ? "text-muted-foreground" : m.maeDays < 1 ? "text-emerald-500" : m.maeDays < 3 ? "text-amber-500" : "text-red-400";
+                    return (
+                      <div key={mode} className="flex items-center text-xs">
+                        <span className="w-16 capitalize text-muted-foreground">{mode}</span>
+                        <span className={`font-bold tabular-nums w-16 ${tone}`}>{m.maeDays != null ? `${m.maeDays.toFixed(1)}d` : "—"}</span>
+                        <span className="text-muted-foreground tabular-nums w-20">bias {m.bias != null ? `${m.bias > 0 ? "+" : ""}${m.bias.toFixed(1)}d` : "—"}</span>
+                        <span className="text-[10px] text-muted-foreground">n={m.sampleSize}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {/* By source */}
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-2">By source (best first)</p>
+                <div className="space-y-1.5">
+                  {accuracy.bySource.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No source breakdown available yet.</p>
+                  ) : (
+                    accuracy.bySource.slice(0, 7).map((src) => {
+                      const tone = src.maeDays == null ? "text-muted-foreground" : src.maeDays < 1 ? "text-emerald-500" : src.maeDays < 3 ? "text-amber-500" : "text-red-400";
+                      return (
+                        <div key={src.source} className="flex items-center text-xs">
+                          <span className="w-28 text-muted-foreground capitalize">{src.source.replace("_", " ")}</span>
+                          <span className={`font-bold tabular-nums w-16 ${tone}`}>{src.maeDays != null ? `${src.maeDays.toFixed(1)}d` : "—"}</span>
+                          <span className="text-muted-foreground tabular-nums w-20">bias {src.bias != null ? `${src.bias > 0 ? "+" : ""}${src.bias.toFixed(1)}d` : "—"}</span>
+                          <span className="text-[10px] text-muted-foreground">n={src.sampleSize}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Flight Observer card — global air learning sensor */}
+      {flightObs && (
+        <Card className="mb-6 border-l-4 border-primary/40">
+          <CardContent className="p-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-md bg-primary/15">
+                  <Plane className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold flex items-center gap-2">
+                    Global Flight Observer
+                    {flightObs.enabled ? (
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">on</span>
+                    ) : (
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-500/20 text-zinc-400 border border-zinc-500/40">off</span>
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {flightObs.enabled
+                      ? "Polling OpenSky for completed flights at major cargo hubs — feeds predictor's flight_global source."
+                      : "Disabled. Set OPENSKY_CLIENT_ID + OPENSKY_CLIENT_SECRET to learn from global flight schedules."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 text-right">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Hubs polled</p>
+                  <p className="text-lg font-bold tabular-nums">{flightObs.hubsPolled}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Routes learned</p>
+                  <p className="text-lg font-bold tabular-nums">{flightObs.routesLearned.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Flights observed</p>
+                  <p className="text-lg font-bold tabular-nums text-primary">{flightObs.observationsTotal.toLocaleString()}</p>
+                </div>
+              </div>
+            </div>
+            {flightObs.topRoutes.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-border">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Top air routes by sample size</p>
+                <div className="flex flex-wrap gap-2">
+                  {flightObs.topRoutes.slice(0, 6).map((r, i) => (
+                    <span key={i} className="text-[11px] bg-muted/50 border border-border rounded px-2 py-0.5 font-mono">
+                      {r.origin} → {r.destination}: <span className="text-foreground font-semibold">{r.meanHours}h</span> <span className="text-muted-foreground">({r.count})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Voyage Observer card — global learning sensor */}
       {observer && (

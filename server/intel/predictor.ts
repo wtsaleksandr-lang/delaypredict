@@ -25,9 +25,11 @@ import { aisStream, NAV_STATUS_LABELS } from "../tracking/vessels/aisstream";
 import type { VesselPosition, VesselStatic } from "../tracking/vessels/aisstream";
 import { resolvePort, haversineKm } from "./ports";
 import { voyageObserver } from "./voyageObserver";
+import { OpenSkyProvider } from "../tracking/providers/opensky";
+import { flightObserver } from "./flightObserver";
 
 interface EtaSource {
-  source: "carrier" | "ais_vessel" | "heuristic" | "lane_history" | "lane_global";
+  source: "carrier" | "ais_vessel" | "air_flight" | "heuristic" | "lane_history" | "lane_global" | "flight_global";
   etaIso: string;
   weight: number; // 0..1
   note?: string;
@@ -42,7 +44,16 @@ interface PredictionResult {
 
 // Tunables
 const ARRIVAL_ANCHOR_THRESHOLD_HOURS = 6; // nav=at_anchor near dest for >6h → considered arrived
-const SOURCE_WEIGHTS = { carrier: 0.35, ais_vessel: 0.25, heuristic: 0.15, lane_history: 0.10, lane_global: 0.15 };
+const SOURCE_WEIGHTS: Record<EtaSource["source"], number> = {
+  carrier: 0.35,
+  ais_vessel: 0.25,    // ocean — vessel-declared via AIS ShipStaticData
+  air_flight: 0.25,    // air — actual departure delay via OpenSky
+  heuristic: 0.15,
+  lane_history: 0.10,  // your own delivered shipments
+  lane_global: 0.15,   // global ocean voyage observer
+  flight_global: 0.15, // global air route observer
+};
+const opensky = new OpenSkyProvider();
 const MIN_LANE_HISTORY_SAMPLES = 5;
 
 // Cache to avoid recomputing too often (per shipment id)
@@ -69,8 +80,8 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
     }
   }
 
-  // 2. AIS vessel-declared ETA
-  if (s.vessel_mmsi) {
+  // 2. AIS vessel-declared ETA (ocean only)
+  if (s.mode === "ocean" && s.vessel_mmsi) {
     const st = aisStream.getStatic(s.vessel_mmsi);
     if (st?.etaIso) {
       sources.push({
@@ -79,6 +90,43 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
         weight: SOURCE_WEIGHTS.ais_vessel,
         note: `Vessel self-declared via AIS (dest ${st.destination ?? "unknown"})`,
       });
+    }
+  }
+
+  // 2b. OpenSky actual-departure delay propagation (air only)
+  // If the flight has departed late, we propagate that delay to predicted arrival.
+  if (s.mode === "air" && s.flight_number && s.eta && s.etd) {
+    try {
+      const tr = await opensky.fetch({
+        mode: "air",
+        flightNumber: s.flight_number,
+        containerNumber: null, bookingNumber: null, awbNumber: null, carrierScac: null,
+      });
+      if (tr.actual_arrival) {
+        // Already arrived per OpenSky: this IS the arrival
+        sources.push({
+          source: "air_flight",
+          etaIso: tr.actual_arrival,
+          weight: SOURCE_WEIGHTS.air_flight,
+          note: `Flight already landed per OpenSky (${tr.vessel_or_flight ?? s.flight_number})`,
+        });
+      } else if (tr.actual_departure) {
+        const scheduledEtdMs = new Date(s.etd as any).getTime();
+        const actualDepMs = new Date(tr.actual_departure).getTime();
+        const carrierEtaMs = new Date(s.eta as any).getTime();
+        if (!isNaN(scheduledEtdMs) && !isNaN(actualDepMs) && !isNaN(carrierEtaMs)) {
+          const departureDelayMs = actualDepMs - scheduledEtdMs;
+          const projectedArrival = new Date(carrierEtaMs + departureDelayMs);
+          sources.push({
+            source: "air_flight",
+            etaIso: projectedArrival.toISOString(),
+            weight: SOURCE_WEIGHTS.air_flight,
+            note: `Departure ${departureDelayMs > 0 ? "+" : ""}${(departureDelayMs / 3600_000).toFixed(1)}h vs scheduled (OpenSky)`,
+          });
+        }
+      }
+    } catch (err) {
+      // OpenSky unavailable / not configured / no recent flight — silent skip
     }
   }
 
@@ -112,17 +160,31 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
         });
       }
 
-      // 5. Global lane mean — from the voyage observer (thousands of vessels worldwide)
+      // 5. Global lane mean — ocean: from the voyage observer
       const month = s.etd ? String(s.etd).slice(0, 7) : undefined;
-      const global = voyageObserver.getLaneMean(s.origin, s.destination, month);
-      if (global) {
-        const d = new Date(etd + global.meanDays * 86400_000);
-        sources.push({
-          source: "lane_global",
-          etaIso: d.toISOString(),
-          weight: SOURCE_WEIGHTS.lane_global,
-          note: `Global AIS-observed mean: ${global.meanDays.toFixed(1)}d (${global.source})`,
-        });
+      if (s.mode === "ocean") {
+        const global = voyageObserver.getLaneMean(s.origin, s.destination, month);
+        if (global) {
+          const d = new Date(etd + global.meanDays * 86400_000);
+          sources.push({
+            source: "lane_global",
+            etaIso: d.toISOString(),
+            weight: SOURCE_WEIGHTS.lane_global,
+            note: `Global AIS-observed mean: ${global.meanDays.toFixed(1)}d (${global.source})`,
+          });
+        }
+      } else if (s.mode === "air") {
+        // 5b. Global flight route mean — air: from the flight observer
+        const flight = flightObserver.getRouteMean(s.origin, s.destination, month);
+        if (flight) {
+          const d = new Date(etd + (flight.meanHours / 24) * 86400_000);
+          sources.push({
+            source: "flight_global",
+            etaIso: d.toISOString(),
+            weight: SOURCE_WEIGHTS.flight_global,
+            note: `Global OpenSky-observed mean: ${flight.meanHours.toFixed(1)}h (${flight.source})`,
+          });
+        }
       }
     }
   }
@@ -256,24 +318,81 @@ export async function refreshAllPredictions(): Promise<{ total: number; updated:
   return { total: active.length, updated };
 }
 
-/** Overall accuracy across delivered shipments: MAE in days between predicted and actual. */
-export async function computePredictionAccuracy(): Promise<{ sampleSize: number; maeDays: number | null; bias: number | null }> {
+interface MaeStat {
+  sampleSize: number;
+  maeDays: number | null;
+  bias: number | null;
+}
+interface SourceMae extends MaeStat {
+  source: string;
+}
+
+/**
+ * Per-mode + per-source accuracy across delivered shipments.
+ *
+ * For each delivered shipment we compute (actual_arrival - predicted_arrival) in
+ * days. MAE = mean absolute error. Bias = signed mean (positive = model is
+ * overoptimistic, predictions arrive earlier than reality).
+ *
+ * We also break down by:
+ *   - mode (ocean / air): tells you which side of the app is more accurate
+ *   - source (carrier / ais_vessel / heuristic / lane_history / lane_global /
+ *     air_flight / flight_global): tells you WHICH signal is doing the work
+ *     and which one is leading you astray
+ */
+export async function computePredictionAccuracy(): Promise<{
+  overall: MaeStat;
+  byMode: { ocean: MaeStat; air: MaeStat };
+  bySource: SourceMae[];
+}> {
   const all = await storage.listShipments();
   const delivered = all.filter((s) => s.status === "delivered" && s.predicted_arrival && s.actual_arrival);
-  if (delivered.length === 0) return { sampleSize: 0, maeDays: null, bias: null };
-  let absSum = 0;
-  let signedSum = 0;
-  for (const s of delivered) {
-    const p = new Date(s.predicted_arrival as any).getTime();
-    const a = new Date(s.actual_arrival as any).getTime();
-    if (isNaN(p) || isNaN(a)) continue;
-    const diffDays = (a - p) / 86400_000;
-    absSum += Math.abs(diffDays);
-    signedSum += diffDays;
-  }
-  return {
-    sampleSize: delivered.length,
-    maeDays: Number((absSum / delivered.length).toFixed(2)),
-    bias: Number((signedSum / delivered.length).toFixed(2)),
+
+  const compute = (rows: Array<{ predMs: number; actMs: number }>): MaeStat => {
+    if (rows.length === 0) return { sampleSize: 0, maeDays: null, bias: null };
+    let absSum = 0;
+    let signedSum = 0;
+    for (const r of rows) {
+      const diffDays = (r.actMs - r.predMs) / 86400_000;
+      absSum += Math.abs(diffDays);
+      signedSum += diffDays;
+    }
+    return {
+      sampleSize: rows.length,
+      maeDays: Number((absSum / rows.length).toFixed(2)),
+      bias: Number((signedSum / rows.length).toFixed(2)),
+    };
   };
+
+  const consensusRows: Array<{ mode: string; predMs: number; actMs: number }> = [];
+  const sourceBuckets = new Map<string, Array<{ predMs: number; actMs: number }>>();
+
+  for (const s of delivered) {
+    const predMs = new Date(s.predicted_arrival as any).getTime();
+    const actMs = new Date(s.actual_arrival as any).getTime();
+    if (isNaN(predMs) || isNaN(actMs)) continue;
+    consensusRows.push({ mode: s.mode, predMs, actMs });
+
+    const sources = (s.prediction_sources as any[]) ?? [];
+    for (const src of sources) {
+      const sMs = new Date(src.etaIso).getTime();
+      if (isNaN(sMs)) continue;
+      let bucket = sourceBuckets.get(src.source);
+      if (!bucket) { bucket = []; sourceBuckets.set(src.source, bucket); }
+      bucket.push({ predMs: sMs, actMs });
+    }
+  }
+
+  const overall = compute(consensusRows);
+  const ocean = compute(consensusRows.filter((r) => r.mode === "ocean"));
+  const air = compute(consensusRows.filter((r) => r.mode === "air"));
+
+  const bySource: SourceMae[] = [];
+  sourceBuckets.forEach((rows, source) => {
+    const stat = compute(rows);
+    bySource.push({ source, ...stat });
+  });
+  bySource.sort((a, b) => (a.maeDays ?? 99) - (b.maeDays ?? 99));
+
+  return { overall, byMode: { ocean, air }, bySource };
 }

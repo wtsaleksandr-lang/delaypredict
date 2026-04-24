@@ -11,6 +11,7 @@ import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
 import { aisStream } from "./tracking/vessels/aisstream";
 import { refreshAllPredictions, computePredictionAccuracy, recomputePredictionForShipment } from "./intel/predictor";
 import { voyageObserver } from "./intel/voyageObserver";
+import { flightObserver } from "./intel/flightObserver";
 
 function applyTrackingToShipment(s: Shipment, tr: NormalizedTracking): Partial<Shipment> {
   // Compute delay days vs ETA if we have an actual_arrival
@@ -111,9 +112,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Voyage observer (global learning sensor)
+  // Voyage observer (global ocean learning sensor)
   app.get("/api/voyage-observer", (_req, res) => {
     res.json(voyageObserver.getStats());
+  });
+  // Flight observer (global air learning sensor)
+  app.get("/api/flight-observer", (_req, res) => {
+    res.json(flightObserver.getStats());
   });
 
   // Predictions admin
