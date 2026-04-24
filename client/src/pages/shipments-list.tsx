@@ -215,19 +215,19 @@ export default function ShipmentsList() {
               <Target className="w-3 h-3" /> Predict MAE
             </p>
             <p className={`text-xl font-bold tabular-nums ${
-              accuracy?.overall.maeDays == null ? "text-muted-foreground" :
+              accuracy?.overall?.maeDays == null ? "text-muted-foreground" :
               accuracy.overall.maeDays < 1 ? "text-emerald-500" :
               accuracy.overall.maeDays < 3 ? "text-amber-500" : "text-red-400"
             }`}>
-              {accuracy?.overall.maeDays != null ? `${accuracy.overall.maeDays.toFixed(1)}d` : "—"}
+              {accuracy?.overall?.maeDays != null ? `${accuracy.overall.maeDays.toFixed(1)}d` : "—"}
             </p>
-            <p className="text-[10px] text-muted-foreground">{accuracy?.overall.sampleSize ?? 0} delivered</p>
+            <p className="text-[10px] text-muted-foreground">{accuracy?.overall?.sampleSize ?? 0} delivered</p>
           </CardContent>
         </Card>
       </div>
 
       {/* Accuracy breakdown — only render once we have any delivered shipments */}
-      {accuracy && accuracy.overall.sampleSize > 0 && (
+      {accuracy && accuracy.overall?.sampleSize != null && accuracy.overall.sampleSize > 0 && (
         <Card className="mb-6">
           <CardContent className="p-4">
             <p className="text-sm font-semibold flex items-center gap-2 mb-2">
