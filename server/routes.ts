@@ -9,6 +9,7 @@ import { detectRiskFactors, readIntelCache } from "./intel";
 import { runIntelRefresh } from "./intel/scraper";
 import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
 import { aisStream } from "./tracking/vessels/aisstream";
+import { prefillShipment } from "./tracking/prefill";
 import { refreshAllPredictions, computePredictionAccuracy, recomputePredictionForShipment } from "./intel/predictor";
 import { voyageObserver } from "./intel/voyageObserver";
 import { flightObserver } from "./intel/flightObserver";
@@ -153,10 +154,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       positions: aisStream.getAll(),
     });
   });
+  // Vessel name → MMSI lookup from AIS observer cache
+  // (must be registered BEFORE /api/vessels/:mmsi to avoid the param route swallowing it)
+  app.get("/api/vessels/lookup", (req, res) => {
+    const name = String(req.query.name || "");
+    if (!name) return res.status(400).json({ message: "name query param required" });
+    res.json({ matches: aisStream.lookupByName(name) });
+  });
   app.get("/api/vessels/:mmsi", (req, res) => {
     const pos = aisStream.getPosition(req.params.mmsi);
     if (!pos) return res.status(404).json({ message: "No known position for this MMSI" });
     res.json(pos);
+  });
+
+  // Auto-prefill: given booking/container/AWB, extract everything we can
+  app.post("/api/shipments/prefill", async (req, res, next) => {
+    try {
+      const result = await prefillShipment(req.body ?? {});
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
   });
 
   // LLM oracle admin: status + cache wipe
