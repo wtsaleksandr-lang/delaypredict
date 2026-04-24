@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronDown, Ship, Plane, Save, Loader2, HelpCircle, Sparkles, Lock, Unlock } from "lucide-react";
+import { ChevronDown, Ship, Plane, Save, Loader2, HelpCircle, Sparkles, Lock, Unlock, Wand2, CheckCircle2, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   calculate,
@@ -85,6 +85,22 @@ interface Detection {
   port_destination?: { value: "Low" | "Med" | "High"; rationale: string; source: string; asOf?: string };
   route?: { value: "Low" | "Med" | "High"; rationale: string; source: string; asOf?: string };
   intelAsOf?: string;
+}
+
+// Reverse-lookup carrier display name → SCAC (used by prefill response)
+function carrierNameToScac(name: string): string {
+  const n = name.toLowerCase();
+  if (n.includes("maersk")) return "MAEU";
+  if (n.includes("msc")) return "MSCU";
+  if (n.includes("hapag")) return "HLCU";
+  if (n.includes("cma")) return "CMDU";
+  if (n.includes("one") || n.includes("ocean network")) return "ONEY";
+  if (n.includes("zim")) return "ZIMU";
+  if (n.includes("evergreen")) return "EGLV";
+  if (n.includes("cosco")) return "COSU";
+  if (n.includes("yang ming")) return "YMLU";
+  if (n.includes("hmm") || n.includes("hyundai")) return "HMMU";
+  return "";
 }
 
 // Compact (?) helper
@@ -167,6 +183,11 @@ export default function ShipmentNew() {
   const [overrides, setOverrides] = useState<OverrideMap>(OVERRIDE_DEFAULTS);
   const [detection, setDetection] = useState<Detection | null>(null);
 
+  // Auto-fill state
+  const [prefillStatus, setPrefillStatus] = useState<{ kind: "idle" | "loading" | "ok" | "err"; message?: string; matchedVia?: string }>({ kind: "idle" });
+  const [vesselCandidates, setVesselCandidates] = useState<Array<{ mmsi: string; shipName: string; lastSeenAt: string }>>([]);
+  const [vesselLookupStatus, setVesselLookupStatus] = useState<"idle" | "looking" | "matched" | "ambiguous" | "none">("idle");
+
   function set<K extends keyof CalcInputs>(k: K, v: CalcInputs[K]) {
     setInputs((p) => ({ ...p, [k]: v }));
   }
@@ -217,6 +238,81 @@ export default function ShipmentNew() {
   if (inputs.riskTier !== derivedTier) {
     queueMicrotask(() => setInputs((p) => ({ ...p, riskTier: derivedTier })));
   }
+
+  // Auto-prefill from carrier APIs (booking / container / awb)
+  async function runPrefill() {
+    setPrefillStatus({ kind: "loading" });
+    try {
+      const r = await apiRequest("POST", "/api/shipments/prefill", {
+        mode: inputs.mode,
+        booking_number: ids.booking_number || null,
+        container_number: ids.container_number || null,
+        awb_number: ids.awb_number || null,
+        flight_number: ids.flight_number || null,
+        carrier_scac: ids.carrier_scac || null,
+      });
+      const data = await r.json();
+      const f = data.fields || {};
+      // Apply only fields the user hasn't already filled
+      setInputs((prev) => ({
+        ...prev,
+        originPort: prev.originPort || f.origin || "",
+        destinationPort: prev.destinationPort || f.destination || "",
+        etd: prev.etd || (f.etd ? String(f.etd).slice(0, 10) : ""),
+        eta: prev.eta || (f.eta ? String(f.eta).slice(0, 10) : ""),
+        transshipments: f.transshipments != null && prev.transshipments === 0 ? f.transshipments : prev.transshipments,
+      }));
+      setIds((prev) => ({
+        ...prev,
+        vessel_name: prev.vessel_name || f.vessel_name || "",
+        vessel_mmsi: prev.vessel_mmsi || f.vessel_mmsi || "",
+        carrier_scac: prev.carrier_scac || (f.carrier ? carrierNameToScac(f.carrier) : ""),
+      }));
+      const filled = [f.origin && "origin", f.destination && "destination", f.etd && "ETD", f.eta && "ETA", f.vessel_name && "vessel"].filter(Boolean).join(", ");
+      setPrefillStatus({
+        kind: "ok",
+        matchedVia: data.matched_via,
+        message: filled ? `Filled ${filled} from ${data.matched_via}` : `No useful fields returned from ${data.matched_via}`,
+      });
+      if (data.vessel_match_candidates?.length) setVesselCandidates(data.vessel_match_candidates);
+      if (data.warnings?.length) toast({ title: "Prefill warnings", description: data.warnings.join(" • ") });
+    } catch (err: any) {
+      setPrefillStatus({ kind: "err", message: String(err?.message || err) });
+    }
+  }
+
+  // Vessel-name → MMSI lookup (debounced on typing)
+  useEffect(() => {
+    if (inputs.mode !== "ocean") return;
+    const name = ids.vessel_name?.trim();
+    if (!name || name.length < 3) {
+      setVesselLookupStatus("idle");
+      setVesselCandidates([]);
+      return;
+    }
+    setVesselLookupStatus("looking");
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/vessels/lookup?name=${encodeURIComponent(name)}`);
+        const data = await r.json();
+        const matches = data.matches ?? [];
+        if (matches.length === 0) {
+          setVesselLookupStatus("none");
+          setVesselCandidates([]);
+        } else if (matches.length === 1) {
+          setVesselLookupStatus("matched");
+          setVesselCandidates([]);
+          setIds((prev) => ({ ...prev, vessel_mmsi: matches[0].mmsi, vessel_name: matches[0].shipName }));
+        } else {
+          setVesselLookupStatus("ambiguous");
+          setVesselCandidates(matches);
+        }
+      } catch {
+        setVesselLookupStatus("idle");
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [ids.vessel_name, inputs.mode]);
 
   const create = useMutation({
     mutationFn: async () => {
@@ -300,7 +396,7 @@ export default function ShipmentNew() {
             <CardHeader className="pb-3 pt-4 px-4">
               <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
                 Identifiers
-                <Help text="All identifier fields are optional. If you leave 'Your Reference' blank, the system will auto-generate one like DP-20260422-A7K9. Container / AWB / Flight numbers are only needed for live tracking." />
+                <Help text="Just enter your booking or container number and click Auto-fill — the system will pull route, dates, vessel, and carrier from the carrier API. All fields are optional; leave reference blank to auto-generate." />
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -315,54 +411,103 @@ export default function ShipmentNew() {
                 <>
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      Booking Number <Help text="The carrier's booking reference for this shipment. Optional; used for tracking lookups when you don't have the container number yet." />
+                      Booking Number <Help text="The carrier's booking reference for this shipment. Click Auto-fill below after entering this OR a container number to pull all the rest." />
                     </Label>
-                    <Input value={ids.booking_number} onChange={(e) => setIds((p) => ({ ...p, booking_number: e.target.value }))} placeholder="optional — e.g. 12345678" data-testid="input-booking-number" />
+                    <Input value={ids.booking_number} onChange={(e) => setIds((p) => ({ ...p, booking_number: e.target.value }))} placeholder="e.g. 12345678" data-testid="input-booking-number" />
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      Container Number <Help text="11-character ISO container ID (e.g. MSKU1234567). Optional; required for automated tracking." />
+                      Container Number <Help text="11-character ISO container ID (e.g. MSKU1234567). Click Auto-fill below to pull route + dates + vessel from the carrier." />
                     </Label>
-                    <Input value={ids.container_number} onChange={(e) => setIds((p) => ({ ...p, container_number: e.target.value.toUpperCase() }))} placeholder="optional — e.g. MSKU1234567" className="font-mono" data-testid="input-container-number" />
+                    <Input value={ids.container_number} onChange={(e) => setIds((p) => ({ ...p, container_number: e.target.value.toUpperCase() }))} placeholder="e.g. MSKU1234567" className="font-mono" data-testid="input-container-number" />
                   </div>
                 </>
               ) : (
                 <>
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      AWB Number <Help text="Air waybill number — typically 3 digits (airline prefix) + 8 digits. Optional; needed for cargo-event tracking via 17TRACK." />
+                      AWB Number <Help text="Air waybill number — 3 digits (airline prefix) + 8 digits. Click Auto-fill to pull route + dates from 17TRACK." />
                     </Label>
-                    <Input value={ids.awb_number} onChange={(e) => setIds((p) => ({ ...p, awb_number: e.target.value }))} placeholder="optional — e.g. 020-12345678" className="font-mono" data-testid="input-awb-number" />
+                    <Input value={ids.awb_number} onChange={(e) => setIds((p) => ({ ...p, awb_number: e.target.value }))} placeholder="e.g. 020-12345678" className="font-mono" data-testid="input-awb-number" />
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      Flight Number <Help text="IATA or ICAO flight number (e.g. LH8400). Optional; used with OpenSky for free flight-status tracking." />
+                      Flight Number <Help text="IATA or ICAO flight number (e.g. LH8400 / DLH8400). Used with OpenSky for free flight-status tracking." />
                     </Label>
-                    <Input value={ids.flight_number} onChange={(e) => setIds((p) => ({ ...p, flight_number: e.target.value.toUpperCase() }))} placeholder="optional — e.g. LH8400" className="font-mono" data-testid="input-flight-number" />
+                    <Input value={ids.flight_number} onChange={(e) => setIds((p) => ({ ...p, flight_number: e.target.value.toUpperCase() }))} placeholder="e.g. LH8400" className="font-mono" data-testid="input-flight-number" />
                   </div>
                 </>
               )}
+
+              {/* Auto-fill from carrier — the headline button */}
+              <div className="sm:col-span-2 flex items-center gap-2 flex-wrap">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={runPrefill}
+                  disabled={prefillStatus.kind === "loading" || (!ids.booking_number && !ids.container_number && !ids.awb_number && !ids.flight_number)}
+                  data-testid="button-prefill"
+                >
+                  {prefillStatus.kind === "loading"
+                    ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                    : <Wand2 className="w-4 h-4 mr-1.5" />}
+                  Auto-fill from carrier
+                </Button>
+                {prefillStatus.kind === "ok" && (
+                  <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> {prefillStatus.message}
+                  </span>
+                )}
+                {prefillStatus.kind === "err" && (
+                  <span className="inline-flex items-center gap-1 text-xs text-red-400">
+                    <AlertCircle className="w-3.5 h-3.5" /> {prefillStatus.message}
+                  </span>
+                )}
+                {prefillStatus.kind === "idle" && (
+                  <span className="text-[11px] text-muted-foreground">Enter a booking, container, or AWB number above, then click to fetch route, dates, vessel.</span>
+                )}
+              </div>
+
               <div className="space-y-1.5 sm:col-span-2">
                 <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  Carrier SCAC <Help text="4-letter Standard Carrier Alpha Code (e.g. MAEU for Maersk, HLCU for Hapag-Lloyd). Optional; lets the app route tracking to the right carrier-direct API and auto-fill reliability." />
+                  Carrier SCAC <Help text="4-letter Standard Carrier Alpha Code (e.g. MAEU for Maersk, HLCU for Hapag-Lloyd). Filled automatically by Auto-fill; otherwise lets the app route tracking to the right carrier-direct API." />
                 </Label>
-                <Input value={ids.carrier_scac} onChange={(e) => setIds((p) => ({ ...p, carrier_scac: e.target.value.toUpperCase() }))} placeholder="optional — MAEU, HLCU, CMDU, MSCU, ONEY…" className="font-mono uppercase" data-testid="input-carrier-scac" />
+                <Input value={ids.carrier_scac} onChange={(e) => setIds((p) => ({ ...p, carrier_scac: e.target.value.toUpperCase() }))} placeholder="MAEU, HLCU, CMDU, MSCU, ONEY…" className="font-mono uppercase" data-testid="input-carrier-scac" />
               </div>
+
               {!isAir && (
-                <>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      Vessel MMSI <Help text="9-digit Maritime Mobile Service Identity of the ship carrying this container. Optional; when set, AISStream.io streams live GPS position into the shipment report." />
-                    </Label>
-                    <Input value={ids.vessel_mmsi} onChange={(e) => setIds((p) => ({ ...p, vessel_mmsi: e.target.value.replace(/\D/g, "").slice(0, 9) }))} placeholder="optional — 9 digits, e.g. 211234567" className="font-mono" data-testid="input-vessel-mmsi" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      Vessel Name <Help text="Display name of the vessel. Purely cosmetic — MMSI is what drives the tracking." />
-                    </Label>
-                    <Input value={ids.vessel_name} onChange={(e) => setIds((p) => ({ ...p, vessel_name: e.target.value }))} placeholder="optional — e.g. MAERSK DENVER" data-testid="input-vessel-name" />
-                  </div>
-                </>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    Vessel Name
+                    <Help text="The ship's name (e.g. MAERSK DENVER). Type at least 3 letters and we'll match it to a live AIS-tracked vessel automatically. You don't need to know the MMSI — we look it up for you." />
+                    {vesselLookupStatus === "looking" && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
+                    {vesselLookupStatus === "matched" && <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-400"><CheckCircle2 className="w-3 h-3" /> matched · MMSI {ids.vessel_mmsi}</span>}
+                    {vesselLookupStatus === "ambiguous" && <span className="text-[10px] font-bold text-amber-400">{vesselCandidates.length} matches — pick one ↓</span>}
+                    {vesselLookupStatus === "none" && <span className="text-[10px] text-muted-foreground">not in AIS cache yet</span>}
+                  </Label>
+                  <Input value={ids.vessel_name} onChange={(e) => setIds((p) => ({ ...p, vessel_name: e.target.value, vessel_mmsi: "" }))} placeholder="e.g. MAERSK DENVER" data-testid="input-vessel-name" />
+                  {vesselLookupStatus === "ambiguous" && vesselCandidates.length > 0 && (
+                    <div className="space-y-1 rounded border border-amber-500/40 bg-amber-500/5 p-2">
+                      <p className="text-[10px] uppercase tracking-wider text-amber-400 font-medium">Multiple vessels match — choose:</p>
+                      {vesselCandidates.map((c) => (
+                        <button
+                          key={c.mmsi}
+                          type="button"
+                          onClick={() => {
+                            setIds((p) => ({ ...p, vessel_name: c.shipName, vessel_mmsi: c.mmsi }));
+                            setVesselLookupStatus("matched");
+                            setVesselCandidates([]);
+                          }}
+                          className="w-full flex items-center justify-between text-xs px-2 py-1 rounded hover:bg-amber-500/15 text-left"
+                        >
+                          <span className="font-mono text-foreground">{c.shipName}</span>
+                          <span className="text-[10px] text-muted-foreground">MMSI {c.mmsi} · last seen {new Date(c.lastSeenAt).toLocaleDateString()}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>

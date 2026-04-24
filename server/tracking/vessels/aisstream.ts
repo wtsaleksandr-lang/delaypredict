@@ -119,6 +119,50 @@ class AisStreamSubscriber {
     }));
   }
 
+  /**
+   * Look up vessel(s) by name from the AIS-observed cache.
+   * Returns matches sorted by recency. Case-insensitive substring match.
+   */
+  lookupByName(query: string, max = 10): Array<{
+    mmsi: string;
+    shipName: string;
+    lastSeenAt: string;
+    lat: number;
+    lon: number;
+    sogKnots: number | null;
+    navStatusLabel: string | null;
+    destination: string | null;
+  }> {
+    const q = (query || "").trim().toUpperCase();
+    if (!q) return [];
+    const results: Array<{ pos: VesselPosition; score: number }> = [];
+    this.positions.forEach((p) => {
+      if (!p.shipName) return;
+      const name = p.shipName.toUpperCase();
+      let score = 0;
+      if (name === q) score = 100;
+      else if (name.startsWith(q)) score = 80;
+      else if (name.includes(q)) score = 50;
+      else return;
+      results.push({ pos: p, score });
+    });
+    results.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      // Within same score, prefer more recently seen
+      return new Date(b.pos.updatedAt).getTime() - new Date(a.pos.updatedAt).getTime();
+    });
+    return results.slice(0, max).map(({ pos }) => ({
+      mmsi: pos.mmsi,
+      shipName: pos.shipName!,
+      lastSeenAt: pos.updatedAt,
+      lat: pos.lat,
+      lon: pos.lon,
+      sogKnots: pos.sogKnots,
+      navStatusLabel: pos.navStatusLabel,
+      destination: this.staticData.get(pos.mmsi)?.destination ?? null,
+    }));
+  }
+
   scheduleReload(): void {
     if (!this.isConfigured()) return;
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
