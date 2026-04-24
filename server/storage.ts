@@ -105,6 +105,8 @@ export class JsonFileStorage implements IStorage {
       awb_number: data.awb_number ?? null,
       flight_number: data.flight_number ?? null,
       carrier_scac: data.carrier_scac ?? null,
+      vessel_mmsi: data.vessel_mmsi ?? null,
+      vessel_name: data.vessel_name ?? null,
       origin: data.origin ?? null,
       destination: data.destination ?? null,
       etd: data.etd ?? null,

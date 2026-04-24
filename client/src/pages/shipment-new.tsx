@@ -55,9 +55,12 @@ interface IdFields {
   awb_number: string;
   flight_number: string;
   carrier_scac: string;
+  vessel_mmsi: string;
+  vessel_name: string;
 }
 const ID_DEFAULTS: IdFields = {
   personal_ref: "", booking_number: "", container_number: "", awb_number: "", flight_number: "", carrier_scac: "",
+  vessel_mmsi: "", vessel_name: "",
 };
 
 interface PnLFields {
@@ -226,6 +229,8 @@ export default function ShipmentNew() {
         awb_number: ids.awb_number || null,
         flight_number: ids.flight_number || null,
         carrier_scac: ids.carrier_scac || null,
+        vessel_mmsi: ids.vessel_mmsi || null,
+        vessel_name: ids.vessel_name || null,
         origin: inputs.originPort || null,
         destination: inputs.destinationPort || null,
         etd: inputs.etd || null,
@@ -343,6 +348,22 @@ export default function ShipmentNew() {
                 </Label>
                 <Input value={ids.carrier_scac} onChange={(e) => setIds((p) => ({ ...p, carrier_scac: e.target.value.toUpperCase() }))} placeholder="optional — MAEU, HLCU, CMDU, MSCU, ONEY…" className="font-mono uppercase" data-testid="input-carrier-scac" />
               </div>
+              {!isAir && (
+                <>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Vessel MMSI <Help text="9-digit Maritime Mobile Service Identity of the ship carrying this container. Optional; when set, AISStream.io streams live GPS position into the shipment report." />
+                    </Label>
+                    <Input value={ids.vessel_mmsi} onChange={(e) => setIds((p) => ({ ...p, vessel_mmsi: e.target.value.replace(/\D/g, "").slice(0, 9) }))} placeholder="optional — 9 digits, e.g. 211234567" className="font-mono" data-testid="input-vessel-mmsi" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Vessel Name <Help text="Display name of the vessel. Purely cosmetic — MMSI is what drives the tracking." />
+                    </Label>
+                    <Input value={ids.vessel_name} onChange={(e) => setIds((p) => ({ ...p, vessel_name: e.target.value }))} placeholder="optional — e.g. MAERSK DENVER" data-testid="input-vessel-name" />
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 

@@ -8,6 +8,7 @@ import { generatePersonalRef } from "./lib/refGenerator";
 import { detectRiskFactors, readIntelCache } from "./intel";
 import { runIntelRefresh } from "./intel/scraper";
 import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
+import { aisStream } from "./tracking/vessels/aisstream";
 
 function applyTrackingToShipment(s: Shipment, tr: NormalizedTracking): Partial<Shipment> {
   // Compute delay days vs ETA if we have an actual_arrival
@@ -73,6 +74,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         parsed.personal_ref = generatePersonalRef();
       }
       const created = await storage.createShipment(parsed);
+      aisStream.scheduleReload();
       res.status(201).json(created);
     } catch (err) {
       next(err);
@@ -107,6 +109,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Vessel positions (AISStream)
+  app.get("/api/vessels", (_req, res) => {
+    res.json({
+      configured: aisStream.isConfigured(),
+      positions: aisStream.getAll(),
+    });
+  });
+  app.get("/api/vessels/:mmsi", (req, res) => {
+    const pos = aisStream.getPosition(req.params.mmsi);
+    if (!pos) return res.status(404).json({ message: "No known position for this MMSI" });
+    res.json(pos);
+  });
+
   // LLM oracle admin: status + cache wipe
   app.get("/api/intel/llm", (_req, res) => {
     res.json({ configured: isLlmConfigured(), model: "claude-haiku-4-5" });
@@ -126,6 +141,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parsed = updateShipmentSchema.parse(req.body);
       const updated = await storage.updateShipment(req.params.id, parsed);
       if (!updated) return res.status(404).json({ message: "Not found" });
+      aisStream.scheduleReload();
       res.json(updated);
     } catch (err) {
       next(err);
@@ -137,6 +153,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const ok = await storage.deleteShipment(req.params.id);
       if (!ok) return res.status(404).json({ message: "Not found" });
+      aisStream.scheduleReload();
       res.status(204).end();
     } catch (err) {
       next(err);

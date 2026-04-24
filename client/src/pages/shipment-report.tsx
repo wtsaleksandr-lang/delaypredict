@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   Ship, Plane, ArrowLeft, RefreshCw, Printer, Trash2,
   TrendingUp, TrendingDown, ShieldCheck, AlertTriangle, Clock,
-  Package, Loader2, ExternalLink,
+  Package, Loader2, ExternalLink, MapPin, Navigation,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -30,11 +30,28 @@ function n(v: any): number {
 
 interface Props { id: string; }
 
+interface VesselPosition {
+  mmsi: string;
+  shipName: string | null;
+  lat: number;
+  lon: number;
+  sogKnots: number | null;
+  cogDeg: number | null;
+  updatedAt: string;
+}
+
 export default function ShipmentReport({ id }: Props) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { data: shipment, isLoading, refetch } = useQuery<Shipment>({
     queryKey: [`/api/shipments/${id}`],
+  });
+  const mmsi = shipment?.vessel_mmsi || null;
+  const { data: vessel } = useQuery<VesselPosition>({
+    queryKey: [`/api/vessels/${mmsi}`],
+    enabled: !!mmsi,
+    refetchInterval: 60_000, // live-ish refresh every minute
+    retry: false,
   });
 
   const refresh = useMutation({
@@ -230,6 +247,60 @@ export default function ShipmentReport({ id }: Props) {
             </div>
           </CardContent>
         </Card>
+
+        {/* Live vessel position (AIS) */}
+        {mmsi && (
+          <Card className="lg:col-span-2">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <Navigation className="w-4 h-4" />
+                Live Vessel Position
+                {shipment.vessel_name && <Badge variant="outline" className="text-[10px]">{shipment.vessel_name}</Badge>}
+                <Badge variant="outline" className="text-[10px] font-mono">MMSI {mmsi}</Badge>
+                <Badge variant="outline" className="text-[10px]">via AISStream.io</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {!vessel ? (
+                <p className="text-sm text-muted-foreground">
+                  Waiting for first AIS position report. This usually takes 1–5 minutes after the vessel next transmits.
+                  Requires <span className="font-mono">AISSTREAM_API_KEY</span> in your <span className="font-mono">.env</span>.
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                  <div>
+                    <p className="text-muted-foreground flex items-center gap-1"><MapPin className="w-3 h-3" /> Position</p>
+                    <p className="font-bold tabular-nums text-foreground">{vessel.lat.toFixed(3)}°, {vessel.lon.toFixed(3)}°</p>
+                    <a
+                      href={`https://www.openstreetmap.org/?mlat=${vessel.lat}&mlon=${vessel.lon}&zoom=6`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-primary hover:underline inline-flex items-center gap-1 mt-0.5"
+                    >
+                      View on map <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Speed</p>
+                    <p className="font-bold tabular-nums text-foreground">
+                      {vessel.sogKnots != null ? `${vessel.sogKnots.toFixed(1)} kn` : "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Course</p>
+                    <p className="font-bold tabular-nums text-foreground">
+                      {vessel.cogDeg != null ? `${Math.round(vessel.cogDeg)}°` : "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Last Update</p>
+                    <p className="font-semibold tabular-nums text-foreground">{new Date(vessel.updatedAt).toLocaleString()}</p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Tracking */}
         <Card className="lg:col-span-2">

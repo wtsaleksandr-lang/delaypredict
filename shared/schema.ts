@@ -30,6 +30,8 @@ export const shipments = pgTable("shipments", {
   awb_number: text("awb_number"),
   flight_number: text("flight_number"),
   carrier_scac: text("carrier_scac"), // e.g. MAEU, MSCU, HLCU, CMDU, ONEY
+  vessel_mmsi: text("vessel_mmsi"),   // 9-digit Maritime Mobile Service Identity, for AIS position tracking
+  vessel_name: text("vessel_name"),
 
   // Route
   origin: text("origin"),
@@ -85,6 +87,8 @@ export const insertShipmentSchema = z.object({
   awb_number: z.string().optional().nullable(),
   flight_number: z.string().optional().nullable(),
   carrier_scac: z.string().optional().nullable(),
+  vessel_mmsi: z.string().optional().nullable(),
+  vessel_name: z.string().optional().nullable(),
   origin: z.string().optional().nullable(),
   destination: z.string().optional().nullable(),
   etd: z.string().optional().nullable(),
