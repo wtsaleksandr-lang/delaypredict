@@ -40,7 +40,7 @@ export class JsonFileStorage implements IStorage {
       for (const s of parsed) {
         // Re-hydrate Date fields that JSON serialized as strings
         const reh: any = { ...s };
-        for (const k of ["created_at", "updated_at", "tracking_last_polled", "tracking_last_event_at"]) {
+        for (const k of ["created_at", "updated_at", "tracking_last_polled", "tracking_last_event_at", "ais_eta", "ais_static_updated_at", "predicted_arrival", "prediction_updated_at"]) {
           if (reh[k] && typeof reh[k] === "string") reh[k] = new Date(reh[k]);
         }
         this.shipments.set(s.id, reh as Shipment);
@@ -129,8 +129,18 @@ export class JsonFileStorage implements IStorage {
       tracking_last_event_at: null,
       actual_departure: null,
       actual_arrival: null,
+      actual_arrival_source: null,
       actual_delay_days: null,
       tracking_payload: null,
+      ais_destination: null,
+      ais_eta: null,
+      ais_nav_status: null,
+      ais_static_updated_at: null,
+      predicted_arrival: null,
+      predicted_delay_days: null,
+      prediction_confidence: null,
+      prediction_sources: null,
+      prediction_updated_at: null,
       status: data.status ?? "planned",
       notes: data.notes ?? null,
       created_at: now,

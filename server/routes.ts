@@ -9,6 +9,7 @@ import { detectRiskFactors, readIntelCache } from "./intel";
 import { runIntelRefresh } from "./intel/scraper";
 import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
 import { aisStream } from "./tracking/vessels/aisstream";
+import { refreshAllPredictions, computePredictionAccuracy, recomputePredictionForShipment } from "./intel/predictor";
 
 function applyTrackingToShipment(s: Shipment, tr: NormalizedTracking): Partial<Shipment> {
   // Compute delay days vs ETA if we have an actual_arrival
@@ -104,6 +105,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const result = await runIntelRefresh();
       res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Predictions admin
+  app.post("/api/predictions/refresh", async (_req, res, next) => {
+    try {
+      res.json(await refreshAllPredictions());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/shipments/:id/predict", async (req, res, next) => {
+    try {
+      const r = await recomputePredictionForShipment(req.params.id, true);
+      if (!r) return res.status(404).json({ message: "Not found or not active" });
+      res.json(r);
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/api/predictions/accuracy", async (_req, res, next) => {
+    try {
+      res.json(await computePredictionAccuracy());
     } catch (err) {
       next(err);
     }

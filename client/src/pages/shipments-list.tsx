@@ -4,7 +4,7 @@ import type { Shipment } from "@shared/schema";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Plus, Ship, Plane, ChevronRight, Package, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
+import { Plus, Ship, Plane, ChevronRight, Package, TrendingUp, TrendingDown, Minus, AlertTriangle, Target } from "lucide-react";
 import { fmtUSD, fmt, riskColor, riskBand } from "@/lib/calculations";
 
 function StatusPill({ status }: { status: string }) {
@@ -65,6 +65,12 @@ function ShipmentRow({ s }: { s: Shipment }) {
                 {s.eta && <span>ETA {String(s.eta).slice(0, 10)}</span>}
                 {s.container_number && <span className="font-mono">{s.container_number}</span>}
                 {s.awb_number && <span className="font-mono">AWB {s.awb_number}</span>}
+                {s.predicted_arrival && (
+                  <span className="inline-flex items-center gap-1 text-primary">
+                    <Target className="w-3 h-3" />
+                    Predicted {new Date(s.predicted_arrival as any).toLocaleDateString()}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -72,6 +78,15 @@ function ShipmentRow({ s }: { s: Shipment }) {
               <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Risk</p>
               <p className={`text-base font-bold tabular-nums ${colors.text}`}>{Math.round(score)}</p>
             </div>
+
+            {s.predicted_delay_days != null && (
+              <div className="hidden md:block text-right">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Pred. Delay</p>
+                <p className={`text-base font-bold tabular-nums ${n(s.predicted_delay_days) > 2 ? "text-red-400" : n(s.predicted_delay_days) > 0 ? "text-amber-500" : "text-emerald-500"}`}>
+                  {n(s.predicted_delay_days) > 0 ? "+" : ""}{fmt(n(s.predicted_delay_days), 1)}d
+                </p>
+              </div>
+            )}
 
             <div className="hidden md:block text-right">
               <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Net P&amp;L</p>
@@ -95,6 +110,9 @@ function ShipmentRow({ s }: { s: Shipment }) {
 export default function ShipmentsList() {
   const { data: shipments, isLoading } = useQuery<Shipment[]>({
     queryKey: ["/api/shipments"],
+  });
+  const { data: accuracy } = useQuery<{ sampleSize: number; maeDays: number | null; bias: number | null }>({
+    queryKey: ["/api/predictions/accuracy"],
   });
 
   // Aggregate KPIs
@@ -129,7 +147,7 @@ export default function ShipmentsList() {
       </div>
 
       {/* KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 mb-6">
         <Card>
           <CardContent className="p-3">
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Shipments</p>
@@ -162,6 +180,21 @@ export default function ShipmentsList() {
           <CardContent className="p-3">
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Delayed Now</p>
             <p className="text-xl font-bold tabular-nums text-amber-500">{totals.delayed}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-3">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+              <Target className="w-3 h-3" /> Predict MAE
+            </p>
+            <p className={`text-xl font-bold tabular-nums ${
+              accuracy?.maeDays == null ? "text-muted-foreground" :
+              accuracy.maeDays < 1 ? "text-emerald-500" :
+              accuracy.maeDays < 3 ? "text-amber-500" : "text-red-400"
+            }`}>
+              {accuracy?.maeDays != null ? `${accuracy.maeDays.toFixed(1)}d` : "—"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">{accuracy?.sampleSize ?? 0} delivered</p>
           </CardContent>
         </Card>
       </div>

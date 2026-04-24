@@ -62,8 +62,22 @@ export const shipments = pgTable("shipments", {
   tracking_last_event_at: timestamp("tracking_last_event_at"),
   actual_departure: date("actual_departure"),
   actual_arrival: date("actual_arrival"),
+  actual_arrival_source: text("actual_arrival_source"), // 'carrier_api' | 'ais_geofence' | 'manual'
   actual_delay_days: numeric("actual_delay_days"),
   tracking_payload: jsonb("tracking_payload"),
+
+  // AIS self-declared (from ShipStaticData + PositionReport)
+  ais_destination: text("ais_destination"),        // UNLOCODE vessel is declaring
+  ais_eta: timestamp("ais_eta"),                   // vessel's own ETA (best-effort year inferred)
+  ais_nav_status: integer("ais_nav_status"),       // 0 under way, 1 at anchor, 5 moored, etc.
+  ais_static_updated_at: timestamp("ais_static_updated_at"),
+
+  // Predictions
+  predicted_arrival: timestamp("predicted_arrival"),   // consensus ETA across sources
+  predicted_delay_days: numeric("predicted_delay_days"),
+  prediction_confidence: numeric("prediction_confidence"), // 0..1
+  prediction_sources: jsonb("prediction_sources"), // array of {source, eta, weight}
+  prediction_updated_at: timestamp("prediction_updated_at"),
 
   // Lifecycle
   status: text("status").notNull().default("planned"), // planned | in_transit | delivered | delayed | cancelled

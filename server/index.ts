@@ -5,6 +5,7 @@ import { createServer } from "http";
 import { startTrackingPoller } from "./jobs/trackingPoller";
 import { startIntelScheduler } from "./intel/scraper";
 import { aisStream } from "./tracking/vessels/aisstream";
+import { startPredictionJobs } from "./jobs/predictionJobs";
 
 const app = express();
 const httpServer = createServer(app);
@@ -101,5 +102,6 @@ app.use((req, res, next) => {
     startTrackingPoller();
     startIntelScheduler();
     aisStream.start().catch((err) => console.error("[aisstream] start failed:", err));
+    startPredictionJobs();
   });
 })();

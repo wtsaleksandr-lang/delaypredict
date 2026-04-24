@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   Ship, Plane, ArrowLeft, RefreshCw, Printer, Trash2,
   TrendingUp, TrendingDown, ShieldCheck, AlertTriangle, Clock,
-  Package, Loader2, ExternalLink, MapPin, Navigation,
+  Package, Loader2, ExternalLink, MapPin, Navigation, Target, Sparkles, CalendarClock,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -37,6 +37,8 @@ interface VesselPosition {
   lon: number;
   sogKnots: number | null;
   cogDeg: number | null;
+  navStatus: number | null;
+  navStatusLabel: string | null;
   updatedAt: string;
 }
 
@@ -189,6 +191,9 @@ export default function ShipmentReport({ id }: Props) {
         </div>
       )}
 
+      <PredictedArrivalCard shipment={shipment} />
+      {shipment.actual_arrival && <ActualArrivalCard shipment={shipment} />}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Risk breakdown chart */}
         <Card>
@@ -287,10 +292,11 @@ export default function ShipmentReport({ id }: Props) {
                     </p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground">Course</p>
+                    <p className="text-muted-foreground">Course / Status</p>
                     <p className="font-bold tabular-nums text-foreground">
                       {vessel.cogDeg != null ? `${Math.round(vessel.cogDeg)}°` : "—"}
                     </p>
+                    {vessel.navStatusLabel && <p className="text-[10px] text-muted-foreground">{vessel.navStatusLabel}</p>}
                   </div>
                   <div>
                     <p className="text-muted-foreground">Last Update</p>
@@ -347,6 +353,134 @@ export default function ShipmentReport({ id }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+function PredictedArrivalCard({ shipment }: { shipment: Shipment }) {
+  const predicted = shipment.predicted_arrival ? new Date(shipment.predicted_arrival as any) : null;
+  const carrierEta = shipment.eta ? new Date(shipment.eta as any) : null;
+  const aisEta = shipment.ais_eta ? new Date(shipment.ais_eta as any) : null;
+  const sources = (shipment.prediction_sources as any[]) || [];
+  const confidence = n(shipment.prediction_confidence);
+  const delayDays = n(shipment.predicted_delay_days);
+
+  if (!predicted && !carrierEta) return null;
+
+  const delayTone = delayDays > 2 ? "text-red-400" : delayDays > 0 ? "text-amber-500" : "text-emerald-500";
+  const confPct = Math.round(confidence * 100);
+  const confTone = confPct >= 70 ? "text-emerald-500" : confPct >= 40 ? "text-amber-500" : "text-red-400";
+
+  // Divergence between AIS and carrier (shown only if both exist)
+  let divergenceDays: number | null = null;
+  if (aisEta && carrierEta) divergenceDays = (aisEta.getTime() - carrierEta.getTime()) / 86400_000;
+
+  return (
+    <Card className="mb-5 border-l-4 border-primary/60">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <Target className="w-4 h-4 text-primary" />
+          Predicted Arrival
+          <Badge className="bg-primary/20 text-primary text-[10px] font-bold border-0">
+            <Sparkles className="w-2.5 h-2.5 mr-1 inline" /> consensus
+          </Badge>
+          {confPct > 0 && <span className={`text-[10px] font-semibold ${confTone}`}>confidence {confPct}%</span>}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 pb-4">
+        {predicted ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted arrival</p>
+              <p className="text-2xl font-bold tabular-nums text-foreground">
+                {predicted.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{predicted.toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Delay vs carrier ETA</p>
+              <p className={`text-2xl font-bold tabular-nums ${delayTone}`}>
+                {delayDays > 0 ? "+" : ""}{fmt(delayDays, 1)}d
+              </p>
+              {carrierEta && <p className="text-[11px] text-muted-foreground">Carrier said {carrierEta.toLocaleDateString()}</p>}
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Sources combined</p>
+              <p className="text-2xl font-bold tabular-nums text-foreground">{sources.length}</p>
+              <p className="text-[11px] text-muted-foreground">More sources = higher confidence</p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Prediction pending — waiting for first AIS ping or tracking refresh.</p>
+        )}
+
+        {divergenceDays != null && Math.abs(divergenceDays) >= 1 && (
+          <div className="mt-3 flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-200">
+              <strong>ETA divergence:</strong> the vessel is announcing arrival {Math.abs(divergenceDays).toFixed(1)}d
+              {divergenceDays > 0 ? " LATER" : " EARLIER"} than the carrier's ETA. Vessels usually know earlier than carrier APIs update.
+            </p>
+          </div>
+        )}
+
+        {sources.length > 0 && (
+          <div className="mt-3 space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Signal breakdown</p>
+            {sources.map((s, i) => (
+              <div key={i} className="flex items-center gap-3 text-xs">
+                <span className="inline-block w-24 text-muted-foreground capitalize">{String(s.source).replace("_", " ")}</span>
+                <span className="font-semibold text-foreground tabular-nums w-32">{new Date(s.etaIso).toLocaleDateString()}</span>
+                <span className="text-muted-foreground flex-1">{s.note ?? ""}</span>
+                <span className="text-[10px] text-muted-foreground">w={s.weight}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ActualArrivalCard({ shipment }: { shipment: Shipment }) {
+  const actual = shipment.actual_arrival ? new Date(shipment.actual_arrival as any) : null;
+  if (!actual) return null;
+  const actualDelay = n(shipment.actual_delay_days);
+  const predicted = shipment.predicted_arrival ? new Date(shipment.predicted_arrival as any) : null;
+  const predictionError = predicted ? (actual.getTime() - predicted.getTime()) / 86400_000 : null;
+  const source = shipment.actual_arrival_source || "manual";
+
+  return (
+    <Card className="mb-5 border-l-4 border-emerald-500/60">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <CalendarClock className="w-4 h-4 text-emerald-500" />
+          Arrived
+          <Badge variant="outline" className="text-[10px] uppercase">{source.replace("_", " ")}</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 pb-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Actual arrival</p>
+          <p className="text-xl font-bold text-foreground">{actual.toLocaleDateString()}</p>
+          <p className="text-[11px] text-muted-foreground">{actual.toLocaleTimeString()}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Actual delay vs carrier ETA</p>
+          <p className={`text-xl font-bold tabular-nums ${actualDelay > 0 ? "text-red-400" : "text-emerald-500"}`}>
+            {actualDelay > 0 ? "+" : ""}{fmt(actualDelay, 1)}d
+          </p>
+        </div>
+        {predictionError != null && (
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Prediction error</p>
+            <p className={`text-xl font-bold tabular-nums ${Math.abs(predictionError) < 1 ? "text-emerald-500" : Math.abs(predictionError) < 3 ? "text-amber-500" : "text-red-400"}`}>
+              {predictionError > 0 ? "+" : ""}{fmt(predictionError, 1)}d
+            </p>
+            <p className="text-[11px] text-muted-foreground">Lower = better model</p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
