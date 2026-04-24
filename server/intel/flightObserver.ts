@@ -118,6 +118,9 @@ class FlightObserver {
 
     const hubs = this.hubsToPoll();
     let observationsThisTick = 0;
+    let totalFlightsSeen = 0;
+    let hubsOk = 0;
+    let hubsErr = 0;
 
     for (const icao of hubs) {
       try {
@@ -125,27 +128,35 @@ class FlightObserver {
         const r = await fetch(url, { headers });
         if (!r.ok) {
           if (r.status !== 404) console.warn(`[flightObserver] ${icao} → ${r.status}`);
+          hubsErr += 1;
+          await new Promise((r) => setTimeout(r, 250));
           continue;
         }
+        hubsOk += 1;
         const flights: any[] = await r.json();
-        for (const f of Array.isArray(flights) ? flights : []) {
+        const list = Array.isArray(flights) ? flights : [];
+        totalFlightsSeen += list.length;
+        for (const f of list) {
           const obs = this.parseFlight(f);
           if (obs) {
             this.recordObservation(obs);
             observationsThisTick++;
           }
         }
-        // Be polite — small delay between hubs to avoid bursting
         await new Promise((r) => setTimeout(r, 250));
       } catch (err) {
+        hubsErr += 1;
         console.warn(`[flightObserver] ${icao} failed:`, err instanceof Error ? err.message : err);
       }
     }
 
-    if (observationsThisTick > 0) {
-      console.log(`[flightObserver] tick: +${observationsThisTick} flight observations across ${hubs.length} hubs`);
-      this.schedulePersist();
-    }
+    // Always log so we can see the tick happened, even when 0 observations were recorded
+    console.log(
+      `[flightObserver] tick: ${observationsThisTick} hub-to-hub observations recorded ` +
+      `(saw ${totalFlightsSeen} departures across ${hubsOk}/${hubs.length} hubs, ${hubsErr} errors). ` +
+      `Total observed lifetime: ${this.observationsTotal}, routes learned: ${this.routeStats.size}`,
+    );
+    if (observationsThisTick > 0) this.schedulePersist();
   }
 
   private parseFlight(f: any): { originIata: string; destIata: string; durationHours: number; arrivedAt: string } | null {
