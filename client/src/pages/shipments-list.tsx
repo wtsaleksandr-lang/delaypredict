@@ -44,7 +44,7 @@ const STATUS_OPTIONS: Array<{ value: string; label: string; dot: string; text: s
 ];
 
 // ── Column config ────────────────────────────────────────────────────────────
-type CellKind = "text" | "money" | "date" | "status" | "mode" | "ref" | "risk" | "delay" | "profit" | "notes";
+type CellKind = "text" | "money" | "date" | "status" | "mode" | "ref" | "risk" | "delay" | "profit" | "notes" | "insurance";
 
 interface ColDef {
   key: string;
@@ -73,6 +73,7 @@ const COLUMNS: ColDef[] = [
   { key: "risk_score", label: "Risk", kind: "risk", filter: "text" },
   { key: "predicted_delay_days", label: "Pred. Delay", kind: "delay" },
   { key: "actual_delay_days", label: "Actual Delay", kind: "delay" },
+  { key: "insurance_recommendation", label: "Insurance", kind: "insurance", filter: "select", filterOptions: ["INSURE", "OPTIONAL", "SKIP"] },
   { key: "carrier_scac", label: "Carrier", kind: "text", editable: true, filter: "text" },
   { key: "vessel_name", label: "Vessel/Flight", kind: "text", editable: true, filter: "text" },
   { key: "cost", label: "Cost", kind: "money", editable: true },
@@ -81,7 +82,7 @@ const COLUMNS: ColDef[] = [
   { key: "notes", label: "Notes", kind: "notes", editable: true, filter: "text" },
 ];
 
-// Cell value extractor (handles computed cells like "profit")
+// Cell value extractor (handles computed cells like "profit" and "insurance")
 function rawCellValue(s: Shipment, col: ColDef): any {
   if (col.key === "profit") {
     const cost = n(s.cost);
@@ -89,7 +90,22 @@ function rawCellValue(s: Shipment, col: ColDef): any {
     const premium = n(s.insurance_premium);
     return premium > 0 ? sale - cost - premium : sale - cost;
   }
+  if (col.key === "insurance_recommendation") {
+    return s.recommendation || "";
+  }
   return (s as any)[col.key];
+}
+
+function bestTriggerPremium(s: Shipment): number | null {
+  const r = s.result_json as any;
+  if (!r?.best?.premium) return null;
+  return Number(r.best.premium);
+}
+function bestTriggerLabel(s: Shipment): string {
+  const r = s.result_json as any;
+  if (!r?.best) return "";
+  const unit = r.triggerUnit === "hour" ? "h" : "d";
+  return `${r.best.trigger}${unit}`;
 }
 
 // String value used for filtering/searching
@@ -309,6 +325,23 @@ function Cell({
       return <span className={`text-xs tabular-nums font-bold ${tone}`}>{d > 0 ? "+" : ""}{fmt(d, 1)}d</span>;
     }
 
+    case "insurance": {
+      const rec = (shipment.recommendation as string) || "";
+      if (!rec) return <span className="text-muted-foreground/40">—</span>;
+      const premium = bestTriggerPremium(shipment);
+      const trig = bestTriggerLabel(shipment);
+      const tone =
+        rec === "INSURE" ? "text-emerald-500 bg-emerald-500/10 border-emerald-500/30" :
+        rec === "OPTIONAL" ? "text-amber-500 bg-amber-500/10 border-amber-500/30" :
+        "text-muted-foreground bg-muted border-border";
+      return (
+        <span className="inline-flex items-center gap-1.5 text-[11px]">
+          <span className={`font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tone}`}>{rec}</span>
+          {trig && <span className="font-mono text-muted-foreground">{trig}</span>}
+          {premium != null && <span className="tabular-nums text-muted-foreground">{fmtUSD(premium)}</span>}
+        </span>
+      );
+    }
     case "notes": {
       const text = (v as string) || "";
       return (

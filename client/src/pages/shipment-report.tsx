@@ -224,6 +224,7 @@ export default function ShipmentReport({ id }: Props) {
       )}
 
       <PredictedArrivalCard shipment={shipment} />
+      <InsuranceRecommendationCard shipment={shipment} />
       {shipment.actual_arrival && <ActualArrivalCard shipment={shipment} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -385,6 +386,92 @@ export default function ShipmentReport({ id }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+function InsuranceRecommendationCard({ shipment }: { shipment: Shipment }) {
+  const result = shipment.result_json as CalcResult | null;
+  if (!result?.triggers || result.triggers.length === 0) return null;
+  const triggers = result.triggers;
+  const best = result.best;
+  const unit = result.triggerUnit === "hour" ? "hour" : "day";
+  return (
+    <Card className="mb-5 border-l-4 border-emerald-500/40">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-emerald-500" />
+          Insurance Recommendation
+          <Badge className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold border-0">
+            best: {best.trigger}-{unit} · {best.recommendation}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 pb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {triggers.map((t) => {
+            const isBest = t.trigger === best.trigger;
+            const tone =
+              t.recommendation === "INSURE" ? "border-emerald-500/40 bg-emerald-500/5" :
+              t.recommendation === "OPTIONAL" ? "border-amber-500/40 bg-amber-500/5" :
+              "border-border bg-muted/20";
+            const recColor =
+              t.recommendation === "INSURE" ? "text-emerald-400" :
+              t.recommendation === "OPTIONAL" ? "text-amber-400" : "text-muted-foreground";
+            return (
+              <div key={t.trigger} className={`rounded-lg border p-3 relative ${tone} ${isBest ? "ring-2 ring-emerald-500/40" : ""}`}>
+                {isBest && (
+                  <span className="absolute -top-2 left-2 text-[9px] font-bold uppercase tracking-wider bg-emerald-500 text-emerald-50 rounded px-1.5 py-0.5">
+                    Best EV
+                  </span>
+                )}
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-base font-bold tabular-nums">{t.trigger}-{unit}</span>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${recColor}`}>{t.recommendation}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                  <div>
+                    <p className="text-muted-foreground">Premium</p>
+                    <p className="font-semibold tabular-nums">{fmtUSD(t.premium)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Insured limit</p>
+                    <p className="font-semibold tabular-nums">{fmtUSD(t.insuredLimit)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Trigger prob.</p>
+                    <p className="font-semibold tabular-nums">{fmtPct(t.triggerProbability)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Exp. payout</p>
+                    <p className="font-semibold tabular-nums">{fmtUSD(t.expectedPayout)}</p>
+                  </div>
+                  <div className="col-span-2 pt-1 border-t border-border/50">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Expected value</span>
+                      <span className={`font-bold tabular-nums ${t.ev > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                        {t.ev > 0 ? "+" : ""}{fmtUSD(t.ev)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">ROI</span>
+                      <span className={`font-bold tabular-nums ${t.roi >= 1 ? "text-emerald-400" : t.roi > 0 ? "text-amber-400" : "text-red-400"}`}>
+                        {t.roi > 0 ? "+" : ""}{fmt(t.roi, 2)}×
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+          <strong>EV</strong> = expected payout − premium. <strong>ROI</strong> ≥ 1 means the insurance pays for itself in expectation.
+          Recommendation: <span className="text-emerald-400 font-semibold">INSURE</span> when EV &gt; 0 and ROI ≥ 1 ·{" "}
+          <span className="text-amber-400 font-semibold">OPTIONAL</span> when EV &gt; 0 but ROI &lt; 1 ·{" "}
+          <span className="text-muted-foreground font-semibold">SKIP</span> when EV ≤ 0.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 
