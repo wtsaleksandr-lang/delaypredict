@@ -75,7 +75,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const parsed = insertShipmentSchema.parse(req.body);
       if (!parsed.personal_ref || !parsed.personal_ref.trim()) {
-        parsed.personal_ref = generatePersonalRef();
+        parsed.personal_ref = await generatePersonalRef();
       }
       const created = await storage.createShipment(parsed);
       aisStream.scheduleReload();
@@ -185,6 +185,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const n = await clearLlmCache();
       res.json({ cleared: n });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Quick-add: minimal blank shipment for inline-edit tables
+  app.post("/api/shipments/blank", async (req, res, next) => {
+    try {
+      const mode = (req.body?.mode === "air" ? "air" : "ocean") as "ocean" | "air";
+      const created = await storage.createShipment({
+        mode,
+        personal_ref: await generatePersonalRef(),
+        inputs_json: { mode },
+        result_json: {},
+      } as any);
+      aisStream.scheduleReload();
+      res.status(201).json(created);
     } catch (err) {
       next(err);
     }

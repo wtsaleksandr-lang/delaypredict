@@ -1,148 +1,450 @@
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation } from "wouter";
 import type { Shipment } from "@shared/schema";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Plus, Ship, Plane, ChevronRight, Package, TrendingUp, TrendingDown, Minus, AlertTriangle, Target, Globe } from "lucide-react";
-import { fmtUSD, fmt, riskColor, riskBand } from "@/lib/calculations";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Plus, Ship, Plane, Package, TrendingUp, TrendingDown,
+  AlertTriangle, Target, Globe, Search, X, RotateCcw, Loader2,
+} from "lucide-react";
+import { fmtUSD, fmt, riskBand } from "@/lib/calculations";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
-function StatusPill({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    planned: "bg-slate-600/30 text-slate-300 border-slate-500/40",
-    in_transit: "bg-blue-600/20 text-blue-300 border-blue-500/40",
-    delayed: "bg-red-600/20 text-red-300 border-red-500/40",
-    delivered: "bg-emerald-600/20 text-emerald-300 border-emerald-500/40",
-    cancelled: "bg-zinc-600/20 text-zinc-400 border-zinc-500/40",
-  };
-  return (
-    <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${map[status] || map.planned}`}>
-      {status.replace("_", " ")}
-    </span>
-  );
-}
-
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function n(v: any): number {
   if (v == null) return 0;
   if (typeof v === "number") return v;
   const x = parseFloat(v);
   return isNaN(x) ? 0 : x;
 }
+function dateOnly(v: any): string {
+  if (!v) return "";
+  return String(v).slice(0, 10);
+}
+function fmtMoney(value: number | null | undefined): string {
+  if (value == null) return "";
+  if (!Number.isFinite(value)) return "";
+  return fmtUSD(value);
+}
 
-function ShipmentRow({ s }: { s: Shipment }) {
-  const score = n(s.risk_score);
-  const colors = riskColor(score);
-  const cost = n(s.cost);
-  const sale = n(s.sale_price);
-  const premium = n(s.insurance_premium);
-  const grossProfit = sale - cost;
-  const netProfit = premium > 0 ? grossProfit - premium : grossProfit - n(s.best_ev) * -1;
-  const Icon = s.mode === "air" ? Plane : Ship;
+// Status visual config — colored dot + label, freight-copilot style
+const STATUS_OPTIONS: Array<{ value: string; label: string; dot: string; text: string }> = [
+  { value: "planned", label: "Planned", dot: "bg-slate-400", text: "text-slate-300" },
+  { value: "in_transit", label: "In transit", dot: "bg-blue-500", text: "text-blue-300" },
+  { value: "delayed", label: "Delayed", dot: "bg-red-500", text: "text-red-300" },
+  { value: "delivered", label: "Delivered", dot: "bg-emerald-500", text: "text-emerald-300" },
+  { value: "cancelled", label: "Cancelled", dot: "bg-zinc-500", text: "text-zinc-400" },
+];
+
+// ── Column config ────────────────────────────────────────────────────────────
+type CellKind = "text" | "money" | "date" | "status" | "mode" | "ref" | "risk" | "delay" | "profit" | "notes";
+
+interface ColDef {
+  key: string;
+  label: string;
+  kind: CellKind;
+  editable?: boolean;
+  filter?: "text" | "select";
+  filterOptions?: string[];
+  sticky?: boolean;
+  className?: string;
+}
+
+const COLUMNS: ColDef[] = [
+  { key: "status", label: "Status", kind: "status", editable: true, filter: "select", filterOptions: STATUS_OPTIONS.map((s) => s.value), sticky: true },
+  { key: "personal_ref", label: "Ref", kind: "ref", filter: "text", sticky: true },
+  { key: "created_at", label: "Created", kind: "date" },
+  { key: "mode", label: "Mode", kind: "mode", filter: "select", filterOptions: ["ocean", "air"] },
+  { key: "container_number", label: "Container", kind: "text", editable: true, filter: "text" },
+  { key: "awb_number", label: "AWB", kind: "text", editable: true, filter: "text" },
+  { key: "origin", label: "Origin", kind: "text", editable: true, filter: "text" },
+  { key: "destination", label: "Destination", kind: "text", editable: true, filter: "text" },
+  { key: "etd", label: "ETD", kind: "date", editable: true },
+  { key: "eta", label: "ETA", kind: "date", editable: true },
+  { key: "predicted_arrival", label: "Predicted", kind: "date" },
+  { key: "actual_arrival", label: "Actual", kind: "date" },
+  { key: "risk_score", label: "Risk", kind: "risk", filter: "text" },
+  { key: "predicted_delay_days", label: "Pred. Delay", kind: "delay" },
+  { key: "actual_delay_days", label: "Actual Delay", kind: "delay" },
+  { key: "carrier_scac", label: "Carrier", kind: "text", editable: true, filter: "text" },
+  { key: "vessel_name", label: "Vessel/Flight", kind: "text", editable: true, filter: "text" },
+  { key: "cost", label: "Cost", kind: "money", editable: true },
+  { key: "sale_price", label: "Sale", kind: "money", editable: true },
+  { key: "profit", label: "Net P&L", kind: "profit" },
+  { key: "notes", label: "Notes", kind: "notes", editable: true, filter: "text" },
+];
+
+// Cell value extractor (handles computed cells like "profit")
+function rawCellValue(s: Shipment, col: ColDef): any {
+  if (col.key === "profit") {
+    const cost = n(s.cost);
+    const sale = n(s.sale_price);
+    const premium = n(s.insurance_premium);
+    return premium > 0 ? sale - cost - premium : sale - cost;
+  }
+  return (s as any)[col.key];
+}
+
+// String value used for filtering/searching
+function filterValueFor(s: Shipment, col: ColDef): string {
+  const v = rawCellValue(s, col);
+  if (v == null) return "";
+  if (col.kind === "date") return dateOnly(v);
+  return String(v);
+}
+
+// ── Drag-to-pan hook ─────────────────────────────────────────────────────────
+function useDragToPan(ref: React.RefObject<HTMLDivElement>) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let isDown = false;
+    let startX = 0;
+    let scrollLeft = 0;
+    const md = (e: MouseEvent) => {
+      // Don't grab on interactive elements
+      const t = e.target as HTMLElement;
+      if (t.closest("button, a, input, select, textarea, [data-no-drag]")) return;
+      isDown = true;
+      el.classList.add("is-dragging");
+      startX = e.pageX - el.offsetLeft;
+      scrollLeft = el.scrollLeft;
+    };
+    const mu = () => {
+      isDown = false;
+      el.classList.remove("is-dragging");
+    };
+    const mm = (e: MouseEvent) => {
+      if (!isDown) return;
+      e.preventDefault();
+      const x = e.pageX - el.offsetLeft;
+      el.scrollLeft = scrollLeft - (x - startX);
+    };
+    el.addEventListener("mousedown", md);
+    window.addEventListener("mouseup", mu);
+    el.addEventListener("mousemove", mm);
+    el.addEventListener("mouseleave", mu);
+    return () => {
+      el.removeEventListener("mousedown", md);
+      window.removeEventListener("mouseup", mu);
+      el.removeEventListener("mousemove", mm);
+      el.removeEventListener("mouseleave", mu);
+    };
+  }, [ref]);
+}
+
+// ── Status dot ───────────────────────────────────────────────────────────────
+function StatusDot({ status, onChange }: { status: string; onChange?: (v: string) => void }) {
+  const cfg = STATUS_OPTIONS.find((s) => s.value === status) || STATUS_OPTIONS[0];
+  const [open, setOpen] = useState(false);
+  const popRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    if (open) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
 
   return (
-    <Link href={`/shipments/${s.id}`}>
-      <Card
-        className={`group cursor-pointer hover-elevate transition-all border-l-4 ${colors.border}`}
-        data-testid={`row-shipment-${s.id}`}
-      >
-        <CardContent className="p-4">
-          <div className="flex items-center gap-4">
-            <div className={`p-2 rounded-md ${colors.bg}/15`}>
-              <Icon className={`w-5 h-5 ${colors.text}`} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-bold text-foreground text-sm truncate">
-                  {s.personal_ref || s.container_number || s.awb_number || s.booking_number || "Unnamed shipment"}
-                </span>
-                <StatusPill status={s.status} />
-                <Badge className={`text-[10px] font-bold uppercase tracking-wider ${colors.bg}/20 ${colors.text} border-0`}>
-                  {colors.label}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1 flex-wrap">
-                <span>{s.origin || "—"} → {s.destination || "—"}</span>
-                {s.eta && <span>ETA {String(s.eta).slice(0, 10)}</span>}
-                {s.container_number && <span className="font-mono">{s.container_number}</span>}
-                {s.awb_number && <span className="font-mono">AWB {s.awb_number}</span>}
-                {s.predicted_arrival && (
-                  <span className="inline-flex items-center gap-1 text-primary">
-                    <Target className="w-3 h-3" />
-                    Predicted {new Date(s.predicted_arrival as any).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="hidden sm:block text-right">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Risk</p>
-              <p className={`text-base font-bold tabular-nums ${colors.text}`}>{Math.round(score)}</p>
-            </div>
-
-            {s.predicted_delay_days != null && (
-              <div className="hidden md:block text-right">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Pred. Delay</p>
-                <p className={`text-base font-bold tabular-nums ${n(s.predicted_delay_days) > 2 ? "text-red-400" : n(s.predicted_delay_days) > 0 ? "text-amber-500" : "text-emerald-500"}`}>
-                  {n(s.predicted_delay_days) > 0 ? "+" : ""}{fmt(n(s.predicted_delay_days), 1)}d
-                </p>
-              </div>
-            )}
-
-            <div className="hidden md:block text-right">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Net P&amp;L</p>
-              <p
-                className={`text-base font-bold tabular-nums ${
-                  netProfit > 0 ? "text-emerald-500" : netProfit < 0 ? "text-red-400" : "text-muted-foreground"
-                }`}
-              >
-                {netProfit > 0 ? "+" : ""}{fmtUSD(netProfit)}
-              </p>
-            </div>
-
-            <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 group-hover:text-foreground transition-colors" />
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
+    <div className="relative inline-flex" data-no-drag>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (onChange) setOpen(true);
+            }}
+            className={`w-3 h-3 rounded-full ${cfg.dot} ring-2 ring-transparent hover:ring-foreground/20 transition`}
+            aria-label={cfg.label}
+          />
+        </TooltipTrigger>
+        <TooltipContent side="right" className="text-xs">{cfg.label} (double-click to change)</TooltipContent>
+      </Tooltip>
+      {open && (
+        <div ref={popRef} className="absolute top-5 left-0 z-50 bg-popover border border-border rounded-md shadow-lg p-1 min-w-[140px]">
+          {STATUS_OPTIONS.map((s) => (
+            <button
+              key={s.value}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange?.(s.value);
+                setOpen(false);
+              }}
+              className="w-full flex items-center gap-2 text-xs px-2 py-1 rounded hover:bg-accent text-left"
+            >
+              <span className={`w-2.5 h-2.5 rounded-full ${s.dot}`} />
+              <span className={s.text}>{s.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
+// ── Inline editable cell ─────────────────────────────────────────────────────
+function EditableCell({
+  value, onSave, type = "text", className = "",
+}: { value: any; onSave: (v: any) => void; type?: "text" | "number" | "date"; className?: string }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string>(value == null ? "" : String(value));
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(value == null ? "" : String(value));
+  }, [value, editing]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    const cur = value == null ? "" : String(value);
+    if (trimmed !== cur) {
+      if (type === "number") {
+        const n = trimmed === "" ? null : parseFloat(trimmed);
+        onSave(n != null && Number.isFinite(n) ? n : null);
+      } else if (type === "date") {
+        onSave(trimmed || null);
+      } else {
+        onSave(trimmed || null);
+      }
+    }
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type={type}
+        value={type === "date" ? draft.slice(0, 10) : draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+          else if (e.key === "Escape") { setDraft(value == null ? "" : String(value)); setEditing(false); }
+        }}
+        onClick={(e) => e.stopPropagation()}
+        data-no-drag
+        className={`w-full bg-background border border-primary rounded px-1 py-0.5 text-xs outline-none ${className}`}
+      />
+    );
+  }
+  return (
+    <span
+      onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      className={`block truncate cursor-text ${className}`}
+      title="Double-click to edit"
+    >
+      {value == null || value === "" ? <span className="text-muted-foreground/40">—</span> : String(value)}
+    </span>
+  );
+}
+
+// ── Cell renderer ────────────────────────────────────────────────────────────
+function Cell({
+  shipment, col, onEdit, onOpenNotes,
+}: {
+  shipment: Shipment;
+  col: ColDef;
+  onEdit: (key: string, value: any) => void;
+  onOpenNotes: (s: Shipment) => void;
+}) {
+  const v = rawCellValue(shipment, col);
+
+  switch (col.kind) {
+    case "status":
+      return <StatusDot status={shipment.status} onChange={(nv) => onEdit("status", nv)} />;
+
+    case "ref":
+      return <span className="font-mono text-xs font-bold text-foreground truncate">{shipment.personal_ref || "—"}</span>;
+
+    case "mode": {
+      const Icon = shipment.mode === "air" ? Plane : Ship;
+      return <Icon className="w-3.5 h-3.5 text-muted-foreground" />;
+    }
+
+    case "date": {
+      const d = dateOnly(v);
+      if (col.editable) return <EditableCell value={d} type="date" onSave={(nv) => onEdit(col.key, nv)} />;
+      return d ? <span className="text-xs tabular-nums">{d}</span> : <span className="text-muted-foreground/40">—</span>;
+    }
+
+    case "money": {
+      const num = n(v);
+      if (col.editable) return <EditableCell value={v == null ? "" : num} type="number" onSave={(nv) => onEdit(col.key, nv)} className="text-right tabular-nums" />;
+      return <span className="text-xs tabular-nums text-right block">{fmtMoney(num)}</span>;
+    }
+
+    case "profit": {
+      const net = n(v);
+      const tone = net > 0 ? "text-emerald-500" : net < 0 ? "text-red-400" : "text-muted-foreground";
+      return <span className={`text-xs tabular-nums font-bold ${tone}`}>{net !== 0 ? fmtMoney(net) : "—"}</span>;
+    }
+
+    case "risk": {
+      const score = n(v);
+      if (score === 0) return <span className="text-muted-foreground/40">—</span>;
+      const band = riskBand(score);
+      const tone = band === "high" ? "text-red-400" : band === "moderate" ? "text-amber-500" : "text-emerald-500";
+      return <span className={`text-xs tabular-nums font-bold ${tone}`}>{Math.round(score)}</span>;
+    }
+
+    case "delay": {
+      const d = n(v);
+      if (v == null) return <span className="text-muted-foreground/40">—</span>;
+      const tone = d > 2 ? "text-red-400" : d > 0 ? "text-amber-500" : "text-emerald-500";
+      return <span className={`text-xs tabular-nums font-bold ${tone}`}>{d > 0 ? "+" : ""}{fmt(d, 1)}d</span>;
+    }
+
+    case "notes": {
+      const text = (v as string) || "";
+      return (
+        <span
+          onDoubleClick={(e) => { e.stopPropagation(); onOpenNotes(shipment); }}
+          className="block truncate cursor-text text-xs text-muted-foreground"
+          title="Double-click to edit notes"
+        >
+          {text || <span className="text-muted-foreground/40">—</span>}
+        </span>
+      );
+    }
+
+    case "text":
+    default: {
+      const display = v == null ? "" : String(v);
+      if (col.editable) return <EditableCell value={display} onSave={(nv) => onEdit(col.key, nv)} />;
+      return display ? <span className="text-xs">{display}</span> : <span className="text-muted-foreground/40">—</span>;
+    }
+  }
+}
+
+// ── Notes modal ──────────────────────────────────────────────────────────────
+function NotesModal({
+  shipment, onClose, onSave,
+}: { shipment: Shipment | null; onClose: () => void; onSave: (notes: string) => void }) {
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    if (shipment) setDraft(shipment.notes || "");
+  }, [shipment]);
+  if (!shipment) return null;
+  return (
+    <Dialog open={!!shipment} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Notes — {shipment.personal_ref}</DialogTitle>
+        </DialogHeader>
+        <Textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Free-form notes about this shipment…"
+          className="min-h-[200px] font-mono text-sm"
+          autoFocus
+        />
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => { onSave(draft); onClose(); }}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
 export default function ShipmentsList() {
-  const { data: shipments, isLoading } = useQuery<Shipment[]>({
-    queryKey: ["/api/shipments"],
-  });
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useDragToPan(wrapRef);
+
+  const { data: shipments, isLoading } = useQuery<Shipment[]>({ queryKey: ["/api/shipments"] });
   const { data: accuracy } = useQuery<{
     overall: { sampleSize: number; maeDays: number | null; bias: number | null };
-    byMode: {
-      ocean: { sampleSize: number; maeDays: number | null; bias: number | null };
-      air: { sampleSize: number; maeDays: number | null; bias: number | null };
-    };
+    byMode: { ocean: any; air: any };
     bySource: Array<{ source: string; sampleSize: number; maeDays: number | null; bias: number | null }>;
-  }>({
-    queryKey: ["/api/predictions/accuracy"],
-  });
+  }>({ queryKey: ["/api/predictions/accuracy"] });
   const { data: observer } = useQuery<{
-    enabled: boolean;
-    vesselsTracked: number;
-    lanesLearned: number;
-    observationsTotal: number;
+    enabled: boolean; vesselsTracked: number; lanesLearned: number; observationsTotal: number;
     topLanes: Array<{ origin: string; destination: string; count: number; meanDays: number }>;
-  }>({
-    queryKey: ["/api/voyage-observer"],
-    refetchInterval: 30_000,
-  });
+  }>({ queryKey: ["/api/voyage-observer"], refetchInterval: 30_000 });
   const { data: flightObs } = useQuery<{
-    enabled: boolean;
-    hubsPolled: number;
-    routesLearned: number;
-    observationsTotal: number;
+    enabled: boolean; hubsPolled: number; routesLearned: number; observationsTotal: number;
     topRoutes: Array<{ origin: string; destination: string; count: number; meanHours: number }>;
-  }>({
-    queryKey: ["/api/flight-observer"],
-    refetchInterval: 60_000,
+  }>({ queryKey: ["/api/flight-observer"], refetchInterval: 60_000 });
+
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [notesTarget, setNotesTarget] = useState<Shipment | null>(null);
+
+  // Mutations
+  const patchMut = useMutation({
+    mutationFn: async ({ id, body }: { id: string; body: any }) => {
+      const r = await apiRequest("PATCH", `/api/shipments/${id}`, body);
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/shipments"] }),
+    onError: (err: any) => toast({ title: "Save failed", description: String(err?.message || err), variant: "destructive" }),
+  });
+  const blankMut = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("POST", "/api/shipments/blank", { mode: "ocean" });
+      return r.json();
+    },
+    onSuccess: (created: Shipment) => {
+      qc.invalidateQueries({ queryKey: ["/api/shipments"] });
+      toast({ title: "Blank row added", description: created.personal_ref });
+    },
+  });
+  const deleteMut = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/shipments/${id}`); },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/shipments"] }),
   });
 
-  // Aggregate KPIs
+  function handleEdit(id: string, key: string, value: any) {
+    patchMut.mutate({ id, body: { [key]: value } });
+  }
+
+  // Derived
+  const filtered = useMemo(() => {
+    let rows = shipments ?? [];
+    if (globalSearch.trim()) {
+      const needle = globalSearch.trim().toLowerCase();
+      rows = rows.filter((s) =>
+        COLUMNS.some((c) => filterValueFor(s, c).toLowerCase().includes(needle)),
+      );
+    }
+    const activeFilters = Object.entries(filters).filter(([, v]) => v !== "" && v != null);
+    if (activeFilters.length > 0) {
+      rows = rows.filter((s) => {
+        for (const [key, needle] of activeFilters) {
+          const col = COLUMNS.find((c) => c.key === key);
+          if (!col) continue;
+          const haystack = filterValueFor(s, col);
+          if (col.filter === "select") {
+            if (haystack !== needle) return false;
+          } else if (!haystack.toLowerCase().includes(String(needle).toLowerCase())) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+    return rows;
+  }, [shipments, globalSearch, filters]);
+
+  // KPI totals
   const totals = (shipments ?? []).reduce(
     (acc, s) => {
       acc.count += 1;
@@ -158,259 +460,229 @@ export default function ShipmentsList() {
     { count: 0, cost: 0, sale: 0, premium: 0, high: 0, delayed: 0 },
   );
   const grossMargin = totals.sale - totals.cost;
+  const hasFilters = globalSearch !== "" || Object.values(filters).some((v) => v !== "" && v != null);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
+    <div className="max-w-[1600px] mx-auto px-4 py-6">
+      {/* Header */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight">Shipments</h1>
-          <p className="text-sm text-muted-foreground">All ocean &amp; air freight shipments with delay risk and P&amp;L</p>
+          <h1 className="text-2xl font-bold tracking-tight">Shipments</h1>
+          <p className="text-sm text-muted-foreground">All ocean &amp; air freight shipments — click row to open, double-click cell to edit.</p>
         </div>
-        <Link href="/shipments/new">
-          <Button data-testid="button-new-shipment">
-            <Plus className="w-4 h-4 mr-2" /> New Shipment
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => blankMut.mutate()} disabled={blankMut.isPending} data-testid="button-add-blank-row">
+            {blankMut.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />} Add blank row
           </Button>
-        </Link>
+          <Link href="/shipments/new">
+            <Button data-testid="button-new-shipment"><Plus className="w-4 h-4 mr-2" /> New Shipment</Button>
+          </Link>
+        </div>
       </div>
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 mb-6">
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Shipments</p>
-            <p className="text-xl font-bold tabular-nums">{totals.count}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Gross Margin</p>
-            <p className={`text-xl font-bold tabular-nums ${grossMargin >= 0 ? "text-emerald-500" : "text-red-400"}`}>
-              {fmtUSD(grossMargin)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Premium Spent</p>
-            <p className="text-xl font-bold tabular-nums">{fmtUSD(totals.premium)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3" /> High Risk
-            </p>
-            <p className="text-xl font-bold tabular-nums text-red-400">{totals.high}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Delayed Now</p>
-            <p className="text-xl font-bold tabular-nums text-amber-500">{totals.delayed}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-              <Target className="w-3 h-3" /> Predict MAE
-            </p>
-            <p className={`text-xl font-bold tabular-nums ${
-              accuracy?.overall?.maeDays == null ? "text-muted-foreground" :
-              accuracy.overall.maeDays < 1 ? "text-emerald-500" :
-              accuracy.overall.maeDays < 3 ? "text-amber-500" : "text-red-400"
-            }`}>
-              {accuracy?.overall?.maeDays != null ? `${accuracy.overall.maeDays.toFixed(1)}d` : "—"}
-            </p>
-            <p className="text-[10px] text-muted-foreground">{accuracy?.overall?.sampleSize ?? 0} delivered</p>
-          </CardContent>
-        </Card>
+        <Card><CardContent className="p-3">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Shipments</p>
+          <p className="text-xl font-bold tabular-nums">{totals.count}</p>
+        </CardContent></Card>
+        <Card><CardContent className="p-3">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Gross Margin</p>
+          <p className={`text-xl font-bold tabular-nums ${grossMargin >= 0 ? "text-emerald-500" : "text-red-400"}`}>{fmtUSD(grossMargin)}</p>
+        </CardContent></Card>
+        <Card><CardContent className="p-3">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Premium Spent</p>
+          <p className="text-xl font-bold tabular-nums">{fmtUSD(totals.premium)}</p>
+        </CardContent></Card>
+        <Card><CardContent className="p-3">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+            <AlertTriangle className="w-3 h-3" /> High Risk
+          </p>
+          <p className="text-xl font-bold tabular-nums text-red-400">{totals.high}</p>
+        </CardContent></Card>
+        <Card><CardContent className="p-3">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Delayed Now</p>
+          <p className="text-xl font-bold tabular-nums text-amber-500">{totals.delayed}</p>
+        </CardContent></Card>
+        <Card><CardContent className="p-3">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+            <Target className="w-3 h-3" /> Predict MAE
+          </p>
+          <p className={`text-xl font-bold tabular-nums ${
+            accuracy?.overall.maeDays == null ? "text-muted-foreground" :
+            accuracy.overall.maeDays < 1 ? "text-emerald-500" :
+            accuracy.overall.maeDays < 3 ? "text-amber-500" : "text-red-400"
+          }`}>
+            {accuracy?.overall.maeDays != null ? `${accuracy.overall.maeDays.toFixed(1)}d` : "—"}
+          </p>
+          <p className="text-[10px] text-muted-foreground">{accuracy?.overall.sampleSize ?? 0} delivered</p>
+        </CardContent></Card>
       </div>
 
-      {/* Accuracy breakdown — only render once we have any delivered shipments */}
-      {accuracy && accuracy.overall?.sampleSize != null && accuracy.overall.sampleSize > 0 && (
-        <Card className="mb-6">
-          <CardContent className="p-4">
-            <p className="text-sm font-semibold flex items-center gap-2 mb-2">
-              <Target className="w-4 h-4 text-primary" /> Prediction Accuracy
-              <span className="text-[10px] text-muted-foreground font-normal">lower MAE = better. bias &gt; 0 = predictions arrive later than reality says</span>
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* By mode */}
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-2">By mode</p>
-                <div className="space-y-1.5">
-                  {(["ocean","air"] as const).map((mode) => {
-                    const m = accuracy.byMode[mode];
-                    const tone = m.maeDays == null ? "text-muted-foreground" : m.maeDays < 1 ? "text-emerald-500" : m.maeDays < 3 ? "text-amber-500" : "text-red-400";
-                    return (
-                      <div key={mode} className="flex items-center text-xs">
-                        <span className="w-16 capitalize text-muted-foreground">{mode}</span>
-                        <span className={`font-bold tabular-nums w-16 ${tone}`}>{m.maeDays != null ? `${m.maeDays.toFixed(1)}d` : "—"}</span>
-                        <span className="text-muted-foreground tabular-nums w-20">bias {m.bias != null ? `${m.bias > 0 ? "+" : ""}${m.bias.toFixed(1)}d` : "—"}</span>
-                        <span className="text-[10px] text-muted-foreground">n={m.sampleSize}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              {/* By source */}
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-2">By source (best first)</p>
-                <div className="space-y-1.5">
-                  {accuracy.bySource.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No source breakdown available yet.</p>
-                  ) : (
-                    accuracy.bySource.slice(0, 7).map((src) => {
-                      const tone = src.maeDays == null ? "text-muted-foreground" : src.maeDays < 1 ? "text-emerald-500" : src.maeDays < 3 ? "text-amber-500" : "text-red-400";
-                      return (
-                        <div key={src.source} className="flex items-center text-xs">
-                          <span className="w-28 text-muted-foreground capitalize">{src.source.replace("_", " ")}</span>
-                          <span className={`font-bold tabular-nums w-16 ${tone}`}>{src.maeDays != null ? `${src.maeDays.toFixed(1)}d` : "—"}</span>
-                          <span className="text-muted-foreground tabular-nums w-20">bias {src.bias != null ? `${src.bias > 0 ? "+" : ""}${src.bias.toFixed(1)}d` : "—"}</span>
-                          <span className="text-[10px] text-muted-foreground">n={src.sampleSize}</span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Flight Observer card — global air learning sensor */}
-      {flightObs && (
-        <Card className="mb-6 border-l-4 border-primary/40">
-          <CardContent className="p-4">
-            <div className="flex items-start justify-between flex-wrap gap-3">
-              <div className="flex items-start gap-3">
-                <div className="p-2 rounded-md bg-primary/15">
-                  <Plane className="w-5 h-5 text-primary" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold flex items-center gap-2">
-                    Global Flight Observer
-                    {flightObs.enabled ? (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">on</span>
-                    ) : (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-500/20 text-zinc-400 border border-zinc-500/40">off</span>
-                    )}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {flightObs.enabled
-                      ? "Polling OpenSky for completed flights at major cargo hubs — feeds predictor's flight_global source."
-                      : "Disabled. Set OPENSKY_CLIENT_ID + OPENSKY_CLIENT_SECRET to learn from global flight schedules."}
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-4 text-right">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Hubs polled</p>
-                  <p className="text-lg font-bold tabular-nums">{flightObs.hubsPolled}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Routes learned</p>
-                  <p className="text-lg font-bold tabular-nums">{flightObs.routesLearned.toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Flights observed</p>
-                  <p className="text-lg font-bold tabular-nums text-primary">{flightObs.observationsTotal.toLocaleString()}</p>
-                </div>
-              </div>
-            </div>
-            {flightObs.topRoutes.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-border">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Top air routes by sample size</p>
-                <div className="flex flex-wrap gap-2">
-                  {flightObs.topRoutes.slice(0, 6).map((r, i) => (
-                    <span key={i} className="text-[11px] bg-muted/50 border border-border rounded px-2 py-0.5 font-mono">
-                      {r.origin} → {r.destination}: <span className="text-foreground font-semibold">{r.meanHours}h</span> <span className="text-muted-foreground">({r.count})</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Voyage Observer card — global learning sensor */}
+      {/* Voyage observer */}
       {observer && (
-        <Card className="mb-6 border-l-4 border-primary/40">
+        <Card className="mb-4 border-l-4 border-primary/40">
           <CardContent className="p-4">
             <div className="flex items-start justify-between flex-wrap gap-3">
               <div className="flex items-start gap-3">
-                <div className="p-2 rounded-md bg-primary/15">
-                  <Globe className="w-5 h-5 text-primary" />
-                </div>
+                <div className="p-2 rounded-md bg-primary/15"><Globe className="w-5 h-5 text-primary" /></div>
                 <div>
-                  <p className="text-sm font-semibold flex items-center gap-2">
-                    Global Voyage Observer
-                    {observer.enabled ? (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">on</span>
-                    ) : (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-500/20 text-zinc-400 border border-zinc-500/40">off</span>
-                    )}
+                  <p className="text-sm font-semibold">Global Voyage Observer{" "}
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${observer.enabled ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-zinc-500/20 text-zinc-400 border-zinc-500/40"}`}>{observer.enabled ? "on" : "off"}</span>
                   </p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {observer.enabled
-                      ? "Passively learning from container vessels worldwide via AISStream — feeds the predictor's lane-history source."
-                      : "Disabled. Set ENABLE_VOYAGE_OBSERVER=true and AISSTREAM_API_KEY to learn from global AIS traffic."}
-                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Vessels: {observer.vesselsTracked.toLocaleString()} · Lanes: {observer.lanesLearned} · Voyages: {observer.observationsTotal}</p>
                 </div>
               </div>
-              <div className="flex gap-4 text-right">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Vessels seen</p>
-                  <p className="text-lg font-bold tabular-nums">{observer.vesselsTracked.toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Lanes learned</p>
-                  <p className="text-lg font-bold tabular-nums">{observer.lanesLearned.toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Voyages observed</p>
-                  <p className="text-lg font-bold tabular-nums text-primary">{observer.observationsTotal.toLocaleString()}</p>
-                </div>
-              </div>
-            </div>
-            {observer.topLanes.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-border">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Top lanes by sample size</p>
-                <div className="flex flex-wrap gap-2">
-                  {observer.topLanes.slice(0, 6).map((l, i) => (
-                    <span key={i} className="text-[11px] bg-muted/50 border border-border rounded px-2 py-0.5 font-mono">
-                      {l.origin} → {l.destination}: <span className="text-foreground font-semibold">{l.meanDays}d</span> <span className="text-muted-foreground">({l.count})</span>
+              {observer.topLanes.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 max-w-[600px]">
+                  {observer.topLanes.slice(0, 5).map((l, i) => (
+                    <span key={i} className="text-[10px] bg-muted/50 border border-border rounded px-1.5 py-0.5 font-mono">
+                      {l.origin}→{l.destination}: {l.meanDays}d ({l.count})
                     </span>
                   ))}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
 
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : (shipments ?? []).length === 0 ? (
-        <Card>
-          <CardContent className="p-10 text-center">
-            <Package className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-            <p className="text-foreground font-semibold mb-1">No shipments yet</p>
-            <p className="text-sm text-muted-foreground mb-4">Create your first shipment to start tracking risk and P&amp;L.</p>
-            <Link href="/shipments/new">
-              <Button><Plus className="w-4 h-4 mr-2" /> New Shipment</Button>
-            </Link>
+      {/* Flight observer */}
+      {flightObs && (
+        <Card className="mb-4 border-l-4 border-primary/40">
+          <CardContent className="p-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-md bg-primary/15"><Plane className="w-5 h-5 text-primary" /></div>
+                <div>
+                  <p className="text-sm font-semibold">Global Flight Observer{" "}
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${flightObs.enabled ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-zinc-500/20 text-zinc-400 border-zinc-500/40"}`}>{flightObs.enabled ? "on" : "off"}</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Hubs: {flightObs.hubsPolled} · Routes: {flightObs.routesLearned} · Flights: {flightObs.observationsTotal}</p>
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
-      ) : (
-        <div className="space-y-2">
-          {shipments!.map((s) => (
-            <ShipmentRow key={s.id} s={s} />
-          ))}
-        </div>
       )}
+
+      {/* Search + clear filters */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            value={globalSearch}
+            onChange={(e) => setGlobalSearch(e.target.value)}
+            placeholder="Search ref / origin / destination / vessel / carrier / notes…"
+            className="pl-8"
+          />
+        </div>
+        {hasFilters && (
+          <Button variant="outline" size="sm" onClick={() => { setGlobalSearch(""); setFilters({}); }}>
+            <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Clear filters
+          </Button>
+        )}
+        <span className="text-xs text-muted-foreground ml-auto">
+          {filtered.length}{filtered.length !== (shipments?.length ?? 0) ? ` of ${shipments?.length ?? 0}` : ""} rows
+        </span>
+      </div>
+
+      <p className="text-[11px] text-muted-foreground mb-2">
+        <strong>Tips:</strong> click row to open · double-click cell to edit · double-click <em>Notes</em> for full editor · click status dot to change · drag table to pan
+      </p>
+
+      {/* Table */}
+      <div ref={wrapRef} className="ship-table-wrap">
+        <table className="ship-table">
+          <thead>
+            <tr>
+              {COLUMNS.map((c) => (
+                <th key={c.key} data-sticky={c.sticky ? "true" : undefined}>{c.label}</th>
+              ))}
+              <th>·</th>
+            </tr>
+            <tr className="ship-filter-row">
+              {COLUMNS.map((c) => (
+                <th key={c.key} data-sticky={c.sticky ? "true" : undefined}>
+                  {c.filter === "select" ? (
+                    <select
+                      value={filters[c.key] || ""}
+                      onChange={(e) => setFilters((p) => ({ ...p, [c.key]: e.target.value }))}
+                      className="filter-input"
+                    >
+                      <option value="">all</option>
+                      {(c.filterOptions || []).map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : c.filter === "text" ? (
+                    <input
+                      type="text"
+                      value={filters[c.key] || ""}
+                      onChange={(e) => setFilters((p) => ({ ...p, [c.key]: e.target.value }))}
+                      placeholder="filter"
+                      className="filter-input"
+                    />
+                  ) : null}
+                </th>
+              ))}
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={COLUMNS.length + 1} className="text-center text-sm text-muted-foreground py-6">Loading…</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td colSpan={COLUMNS.length + 1} className="text-center text-sm text-muted-foreground py-10">
+                  {hasFilters ? "No shipments match the current filters." : (
+                    <div>
+                      <Package className="w-8 h-8 mx-auto mb-2 text-muted-foreground/60" />
+                      <p>No shipments yet.</p>
+                      <p className="text-xs mt-1">Click <strong>+ Add blank row</strong> or <strong>New Shipment</strong> to get started.</p>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ) : (
+              filtered.map((s) => (
+                <tr
+                  key={s.id}
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest("[data-no-drag], button, a, input, select, textarea")) return;
+                    navigate(`/shipments/${s.id}`);
+                  }}
+                  className="ship-row"
+                  data-testid={`row-shipment-${s.id}`}
+                >
+                  {COLUMNS.map((c) => (
+                    <td key={c.key} data-sticky={c.sticky ? "true" : undefined} className={c.className}>
+                      <Cell shipment={s} col={c} onEdit={(k, v) => handleEdit(s.id, k, v)} onOpenNotes={setNotesTarget} />
+                    </td>
+                  ))}
+                  <td className="actions-cell">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); if (confirm(`Delete ${s.personal_ref}?`)) deleteMut.mutate(s.id); }}
+                      className="text-muted-foreground hover:text-red-400 px-1"
+                      title="Delete"
+                      data-no-drag
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <NotesModal
+        shipment={notesTarget}
+        onClose={() => setNotesTarget(null)}
+        onSave={(notes) => {
+          if (notesTarget) handleEdit(notesTarget.id, "notes", notes);
+        }}
+      />
     </div>
   );
 }
