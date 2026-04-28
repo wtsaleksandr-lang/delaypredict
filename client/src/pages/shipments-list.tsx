@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   Plus, Ship, Plane, Package, TrendingUp, TrendingDown,
   AlertTriangle, Target, Globe, Search, X, RotateCcw, Loader2,
+  Upload, Sparkles, FileText,
 } from "lucide-react";
 import { fmtUSD, fmt, riskBand } from "@/lib/calculations";
 import { apiRequest } from "@/lib/queryClient";
@@ -388,6 +389,70 @@ export default function ShipmentsList() {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [notesTarget, setNotesTarget] = useState<Shipment | null>(null);
 
+  // ── File-drop extraction state ─────────────────────────────────────────────
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { data: extractorStatus } = useQuery<{ configured: boolean; model: string }>({
+    queryKey: ["/api/shipments/extract/status"],
+  });
+  const extractMut = useMutation({
+    mutationFn: async (files: File[]) => {
+      const fd = new FormData();
+      files.forEach((f) => fd.append("files", f));
+      const r = await fetch(import.meta.env.BASE_URL.replace(/\/$/, "") + "/api/shipments/extract", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        throw new Error(`${r.status}: ${text || r.statusText}`);
+      }
+      return r.json();
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["/api/shipments"] });
+      setPendingFiles([]);
+      const conf = Math.round((data.extracted?.confidence ?? 0.5) * 100);
+      toast({
+        title: `Extracted ${data.shipment.personal_ref}`,
+        description: `${data.extracted?.origin || "?"} → ${data.extracted?.destination || "?"} (confidence ${conf}%)`,
+      });
+      navigate(`/shipments/${data.shipment.id}`);
+    },
+    onError: (err: any) => toast({ title: "Extraction failed", description: String(err?.message || err), variant: "destructive" }),
+  });
+
+  // Add files (from drop, click, or paste)
+  function addFiles(list: FileList | File[]) {
+    const arr = Array.from(list).filter((f) => f.size > 0 && f.size <= 20 * 1024 * 1024);
+    if (arr.length === 0) return;
+    setPendingFiles((prev) => [...prev, ...arr].slice(0, 8));
+  }
+
+  // Listen for paste events anywhere on the page (Ctrl+V from screenshot)
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "file") {
+          const f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length > 0) {
+        addFiles(files);
+        toast({ title: `Captured ${files.length} pasted file(s)`, description: "Click Extract & create to process" });
+      }
+    }
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [toast]);
+
   // Mutations
   const patchMut = useMutation({
     mutationFn: async ({ id, body }: { id: string; body: any }) => {
@@ -565,6 +630,89 @@ export default function ShipmentsList() {
           </CardContent>
         </Card>
       )}
+
+      {/* File-drop briefing extractor */}
+      <Card className="mb-4">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-2 mb-2">
+            <Sparkles className="w-4 h-4 text-primary mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold">Auto-extract from a booking briefing</p>
+              <p className="text-xs text-muted-foreground">
+                Drop a booking confirmation, BOL, packing list, screenshot, email — Claude reads them and creates a pre-filled shipment.
+                {extractorStatus && !extractorStatus.configured && (
+                  <span className="text-amber-400 ml-1">⚠ ANTHROPIC_API_KEY not set — extractor disabled.</span>
+                )}
+              </p>
+            </div>
+          </div>
+          <div
+            onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+            onDragOver={(e) => { e.preventDefault(); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragActive(false);
+              if (e.dataTransfer.files) addFiles(e.dataTransfer.files);
+            }}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-md py-6 px-4 text-center cursor-pointer transition-colors ${
+              dragActive ? "border-primary bg-primary/10" : "border-border hover:border-primary/50 hover:bg-accent/30"
+            }`}
+            data-testid="drop-zone"
+          >
+            <Upload className="w-6 h-6 mx-auto mb-2 text-muted-foreground" />
+            <p className="text-sm font-medium">
+              <strong>Drop files</strong>, click to browse, or press <kbd className="px-1.5 py-0.5 text-[10px] bg-muted rounded border border-border">Ctrl+V</kbd> to paste a screenshot
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              PDF · PNG · JPG · WEBP · EML · MSG · HTML · TXT — multiple files describe ONE shipment (max 8, 20 MB each)
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              hidden
+              multiple
+              accept="application/pdf,image/png,image/jpeg,image/webp,image/gif,message/rfc822,application/vnd.ms-outlook,text/html,text/plain,.pdf,.png,.jpg,.jpeg,.webp,.gif,.eml,.msg,.html,.htm,.txt"
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = ""; // allow re-selecting the same file
+              }}
+            />
+          </div>
+          {pendingFiles.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Pending ({pendingFiles.length})</p>
+              <ul className="space-y-1">
+                {pendingFiles.map((f, i) => (
+                  <li key={i} className="flex items-center justify-between text-xs bg-muted/40 border border-border rounded px-2 py-1">
+                    <span className="flex items-center gap-2">
+                      <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="font-mono">{f.name}</span>
+                      <span className="text-muted-foreground">({Math.round(f.size / 1024)} KB)</span>
+                    </span>
+                    <button onClick={() => setPendingFiles((p) => p.filter((_, idx) => idx !== i))} className="text-muted-foreground hover:text-red-400">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex items-center gap-2 mt-2">
+                <Button
+                  size="sm"
+                  onClick={() => extractMut.mutate(pendingFiles)}
+                  disabled={extractMut.isPending || !extractorStatus?.configured}
+                  data-testid="button-extract"
+                >
+                  {extractMut.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+                  Extract &amp; create shipment
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setPendingFiles([])}>Clear</Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Search + clear filters */}
       <div className="flex items-center gap-2 mb-3">

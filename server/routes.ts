@@ -8,11 +8,41 @@ import { generatePersonalRef } from "./lib/refGenerator";
 import { detectRiskFactors, readIntelCache } from "./intel";
 import { runIntelRefresh } from "./intel/scraper";
 import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
+import { extractFromFiles, isExtractorConfigured } from "./intel/shipmentExtractor";
+import multer from "multer";
 import { aisStream } from "./tracking/vessels/aisstream";
 import { prefillShipment } from "./tracking/prefill";
 import { refreshAllPredictions, computePredictionAccuracy, recomputePredictionForShipment } from "./intel/predictor";
 import { voyageObserver } from "./intel/voyageObserver";
 import { flightObserver } from "./intel/flightObserver";
+
+function carrierNameToScac(name: string): string | null {
+  const n = name.toLowerCase();
+  if (n.includes("maersk")) return "MAEU";
+  if (n.includes("msc")) return "MSCU";
+  if (n.includes("hapag")) return "HLCU";
+  if (n.includes("cma")) return "CMDU";
+  if (n.includes("one") || n.includes("ocean network")) return "ONEY";
+  if (n.includes("zim")) return "ZIMU";
+  if (n.includes("evergreen")) return "EGLV";
+  if (n.includes("cosco")) return "COSU";
+  if (n.includes("yang ming")) return "YMLU";
+  if (n.includes("hmm") || n.includes("hyundai")) return "HMMU";
+  return null;
+}
+
+function composeExtractedNotes(e: any): string {
+  const parts: string[] = [];
+  if (e.shipper_name) parts.push(`Shipper: ${e.shipper_name}`);
+  if (e.receiver_name) parts.push(`Receiver: ${e.receiver_name}`);
+  if (e.cargo_description) parts.push(`Cargo: ${e.cargo_description}`);
+  if (e.weight_kg != null) parts.push(`Weight: ${e.weight_kg} kg`);
+  if (e.volume_cbm != null) parts.push(`Volume: ${e.volume_cbm} cbm`);
+  if (e.voyage_number) parts.push(`Voyage: ${e.voyage_number}`);
+  if (e.notes) parts.push(`AI note: ${e.notes}`);
+  parts.push(`(extracted via Claude, confidence ${(e.confidence * 100).toFixed(0)}%)`);
+  return parts.join("\n");
+}
 
 function applyTrackingToShipment(s: Shipment, tr: NormalizedTracking): Partial<Shipment> {
   // Compute delay days vs ETA if we have an actual_arrival
@@ -185,6 +215,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const n = await clearLlmCache();
       res.json({ cleared: n });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── File-drop extraction ────────────────────────────────────────────────
+  // POST /api/shipments/extract — multipart/form-data with one or more files.
+  // Calls Claude Haiku to extract shipment fields, then creates the shipment.
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024, files: 8 }, // 20 MB, max 8 files
+  });
+  app.get("/api/shipments/extract/status", (_req, res) => {
+    res.json({ configured: isExtractorConfigured(), model: "claude-haiku-4-5" });
+  });
+  app.post("/api/shipments/extract", upload.array("files", 8), async (req, res, next) => {
+    try {
+      const files = (req.files as any[]) || [];
+      if (files.length === 0) return res.status(400).json({ message: "No files uploaded (form field: 'files')" });
+      if (!isExtractorConfigured()) {
+        return res.status(503).json({ message: "Extractor disabled — set ANTHROPIC_API_KEY in your .env" });
+      }
+      const extracted = await extractFromFiles(files.map((f: any) => ({
+        buffer: f.buffer, mimetype: f.mimetype, originalname: f.originalname, size: f.size,
+      })));
+
+      // Map extracted → shipment fields (only keep what fits the schema)
+      const personal_ref = await generatePersonalRef();
+      const carrier_scac = extracted.carrier_scac
+        || (extracted.carrier_name ? carrierNameToScac(extracted.carrier_name) : null);
+      const containerInfo = extracted.containers?.[0];
+      const created = await storage.createShipment({
+        mode: extracted.mode === "air" ? "air" : "ocean",
+        personal_ref,
+        booking_number: extracted.booking_number ?? null,
+        container_number: extracted.container_number ?? containerInfo?.number ?? null,
+        awb_number: extracted.awb_number ?? null,
+        flight_number: extracted.flight_number ?? null,
+        carrier_scac: carrier_scac ?? null,
+        vessel_name: extracted.vessel_name ?? null,
+        origin: extracted.origin ?? null,
+        destination: extracted.destination ?? null,
+        etd: extracted.etd ?? null,
+        eta: extracted.eta ?? null,
+        notes: composeExtractedNotes(extracted),
+        inputs_json: { mode: extracted.mode, _extracted: extracted },
+        result_json: {},
+      } as any);
+      aisStream.scheduleReload();
+      res.status(201).json({ shipment: created, extracted });
     } catch (err) {
       next(err);
     }
