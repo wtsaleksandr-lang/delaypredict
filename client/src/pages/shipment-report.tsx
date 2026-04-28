@@ -9,6 +9,7 @@ import {
   Ship, Plane, ArrowLeft, RefreshCw, Printer, Trash2,
   TrendingUp, TrendingDown, ShieldCheck, AlertTriangle, Clock,
   Package, Loader2, ExternalLink, MapPin, Navigation, Target, Sparkles, CalendarClock,
+  FileText, User, Truck, Box,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -171,14 +172,45 @@ export default function ShipmentReport({ id }: Props) {
                 </div>
               </div>
             </div>
-            <div className="text-right">
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Risk Score</p>
-              <p className={`text-4xl font-black tabular-nums leading-none ${colors.text}`}>{Math.round(score)}<span className="text-base text-muted-foreground font-bold"> /100</span></p>
-              <p className="text-xs text-muted-foreground mt-1">Recommendation: <span className={`font-bold ${colors.text}`}>{shipment.recommendation}</span></p>
+            <div className="grid grid-cols-3 gap-3 sm:gap-5 sm:min-w-[420px]">
+              <div className="text-right">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Risk Score</p>
+                <p className={`text-3xl sm:text-4xl font-black tabular-nums leading-none ${colors.text}`}>{Math.round(score)}<span className="text-sm text-muted-foreground font-bold"> /100</span></p>
+                <p className="text-[11px] text-muted-foreground mt-1">{shipment.recommendation || "—"}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted Delay</p>
+                {shipment.predicted_delay_days != null ? (
+                  <p className={`text-3xl sm:text-4xl font-black tabular-nums leading-none ${
+                    n(shipment.predicted_delay_days) > 2 ? "text-red-400" :
+                    n(shipment.predicted_delay_days) > 0 ? "text-amber-500" :
+                    "text-emerald-500"
+                  }`}>
+                    {n(shipment.predicted_delay_days) > 0 ? "+" : ""}{fmt(n(shipment.predicted_delay_days), 1)}<span className="text-sm text-muted-foreground font-bold"> d</span>
+                  </p>
+                ) : (
+                  <p className="text-3xl sm:text-4xl font-black tabular-nums leading-none text-muted-foreground/40">—</p>
+                )}
+                <p className="text-[11px] text-muted-foreground mt-1">vs carrier ETA</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted Arrival</p>
+                {shipment.predicted_arrival ? (
+                  <p className="text-2xl sm:text-3xl font-black tabular-nums leading-none text-foreground">
+                    {new Date(shipment.predicted_arrival as any).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                  </p>
+                ) : (
+                  <p className="text-2xl sm:text-3xl font-black tabular-nums leading-none text-muted-foreground/40">—</p>
+                )}
+                <p className="text-[11px] text-muted-foreground mt-1">consensus ETA</p>
+              </div>
             </div>
           </div>
         </CardContent>
       </Card>
+
+      {/* AI Extracted briefing — shown only when shipment was created via file drop */}
+      <ExtractedBriefingCard shipment={shipment} />
 
       {/* P&L tiles */}
       {(cost > 0 || sale > 0) && (
@@ -353,6 +385,60 @@ export default function ShipmentReport({ id }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+function ExtractedBriefingCard({ shipment }: { shipment: Shipment }) {
+  const inputs = shipment.inputs_json as any;
+  const extracted = inputs?._extracted;
+  if (!extracted) return null;
+  const conf = Math.round((extracted.confidence ?? 0.5) * 100);
+  const items: Array<{ label: string; value: string; icon?: any }> = [];
+  if (extracted.shipper_name) items.push({ label: "Shipper", value: extracted.shipper_name, icon: User });
+  if (extracted.receiver_name) items.push({ label: "Receiver", value: extracted.receiver_name, icon: User });
+  if (extracted.carrier_name) items.push({ label: "Carrier", value: extracted.carrier_name, icon: Truck });
+  if (extracted.voyage_number) items.push({ label: "Voyage", value: extracted.voyage_number });
+  if (extracted.cargo_description) items.push({ label: "Cargo", value: extracted.cargo_description, icon: Box });
+  if (extracted.weight_kg != null) items.push({ label: "Weight", value: `${extracted.weight_kg} kg` });
+  if (extracted.volume_cbm != null) items.push({ label: "Volume", value: `${extracted.volume_cbm} cbm` });
+  if (extracted.containers && Array.isArray(extracted.containers) && extracted.containers.length > 0) {
+    const c = extracted.containers[0];
+    if (c.type || c.quantity) items.push({ label: "Container", value: `${c.quantity ?? 1}× ${c.type ?? ""}`.trim() });
+  }
+  if (items.length === 0) return null;
+
+  return (
+    <Card className="mb-5 border-l-4 border-primary/60">
+      <CardHeader className="pb-2 pt-4 px-4">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-primary" />
+          AI Extracted from Briefing
+          <Badge className="bg-primary/20 text-primary text-[10px] font-bold border-0">claude haiku</Badge>
+          <span className={`text-[10px] font-semibold ${
+            conf >= 75 ? "text-emerald-400" : conf >= 50 ? "text-amber-400" : "text-red-400"
+          }`}>confidence {conf}%</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 pb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2">
+          {items.map((it, i) => {
+            const Icon = it.icon || FileText;
+            return (
+              <div key={i} className="flex items-start gap-2 text-xs">
+                <Icon className="w-3.5 h-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{it.label}</p>
+                  <p className="text-foreground truncate" title={it.value}>{it.value}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {extracted.notes && (
+          <p className="text-xs text-muted-foreground mt-3 italic">AI note: {extracted.notes}</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

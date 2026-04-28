@@ -9,6 +9,7 @@ import { detectRiskFactors, readIntelCache } from "./intel";
 import { runIntelRefresh } from "./intel/scraper";
 import { isLlmConfigured, clearLlmCache } from "./intel/llmOracle";
 import { extractFromFiles, isExtractorConfigured } from "./intel/shipmentExtractor";
+import { autoComputeShipment } from "./intel/autoCompute";
 import multer from "multer";
 import { aisStream } from "./tracking/vessels/aisstream";
 import { prefillShipment } from "./tracking/prefill";
@@ -109,7 +110,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const created = await storage.createShipment(parsed);
       aisStream.scheduleReload();
-      res.status(201).json(created);
+      const enriched = await autoComputeShipment(created);
+      res.status(201).json(enriched);
     } catch (err) {
       next(err);
     }
@@ -264,7 +266,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         result_json: {},
       } as any);
       aisStream.scheduleReload();
-      res.status(201).json({ shipment: created, extracted });
+      const enriched = await autoComputeShipment(created);
+      res.status(201).json({ shipment: enriched, extracted });
     } catch (err) {
       next(err);
     }
@@ -281,7 +284,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         result_json: {},
       } as any);
       aisStream.scheduleReload();
-      res.status(201).json(created);
+      const enriched = await autoComputeShipment(created);
+      res.status(201).json(enriched);
     } catch (err) {
       next(err);
     }
@@ -294,7 +298,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const updated = await storage.updateShipment(req.params.id, parsed);
       if (!updated) return res.status(404).json({ message: "Not found" });
       aisStream.scheduleReload();
-      res.json(updated);
+      // If a route/date/carrier field was edited, recompute risk + prediction
+      const recomputeKeys = ["origin", "destination", "etd", "eta", "carrier_scac", "vessel_mmsi", "container_number", "awb_number", "flight_number", "mode"];
+      const triggered = Object.keys(parsed).some((k) => recomputeKeys.includes(k));
+      const final = triggered ? await autoComputeShipment(updated) : updated;
+      res.json(final);
     } catch (err) {
       next(err);
     }

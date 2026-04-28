@@ -40,7 +40,6 @@ function Shell({ children }: { children: React.ReactNode }) {
           </Link>
           <nav className="flex items-center gap-1 ml-4">
             <NavLink href="/shipments" icon={List}>Shipments</NavLink>
-            <NavLink href="/shipments/new" icon={Plus}>New</NavLink>
             <NavLink href="/calculator" icon={Calculator}>Quick Calc</NavLink>
           </nav>
         </div>
