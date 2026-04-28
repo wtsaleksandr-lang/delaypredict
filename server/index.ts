@@ -21,6 +21,39 @@ declare module "http" {
   }
 }
 
+// ── Path-prefix support (e.g. served under /delaypredict/) ────────────────────
+// When BASE_PATH is set, strip it from the URL so the rest of the routes match
+// as if served from /. The frontend bundle is built with the same prefix.
+const BASE_PATH = (process.env.BASE_PATH || "").replace(/\/$/, "");
+if (BASE_PATH) {
+  app.use((req, _res, next) => {
+    if (req.url === BASE_PATH) req.url = "/";
+    else if (req.url.startsWith(BASE_PATH + "/")) req.url = req.url.substring(BASE_PATH.length);
+    next();
+  });
+  console.log(`[express] base path: ${BASE_PATH}`);
+}
+
+// ── Basic HTTP auth (single shared password) ──────────────────────────────────
+// Activated when BASIC_AUTH_USER + BASIC_AUTH_PASS are set. Browser-native popup.
+const AUTH_USER = process.env.BASIC_AUTH_USER;
+const AUTH_PASS = process.env.BASIC_AUTH_PASS;
+if (AUTH_USER && AUTH_PASS) {
+  app.use((req, res, next) => {
+    const header = req.headers.authorization || "";
+    if (header.startsWith("Basic ")) {
+      const decoded = Buffer.from(header.slice(6), "base64").toString("utf-8");
+      const idx = decoded.indexOf(":");
+      const user = idx >= 0 ? decoded.slice(0, idx) : decoded;
+      const pass = idx >= 0 ? decoded.slice(idx + 1) : "";
+      if (user === AUTH_USER && pass === AUTH_PASS) return next();
+    }
+    res.set("WWW-Authenticate", 'Basic realm="DelayPredict"');
+    res.status(401).send("Authentication required");
+  });
+  console.log(`[express] basic auth enabled for user "${AUTH_USER}"`);
+}
+
 app.use(
   express.json({
     verify: (req, _res, buf) => {

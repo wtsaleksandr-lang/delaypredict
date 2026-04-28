@@ -1,5 +1,16 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+// When the app is served under a path prefix (e.g. /delaypredict/), prepend it
+// to all relative API URLs so /api/* requests go to /delaypredict/api/*.
+const BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+
+function withBase(url: string): string {
+  if (!url) return url;
+  if (/^https?:\/\//.test(url)) return url; // absolute
+  if (BASE && url.startsWith("/")) return BASE + url;
+  return url;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -12,7 +23,7 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const res = await fetch(url, {
+  const res = await fetch(withBase(url), {
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
@@ -29,7 +40,8 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    const url = withBase(queryKey.join("/") as string);
+    const res = await fetch(url, {
       credentials: "include",
     });
 

@@ -1,4 +1,4 @@
-import { Switch, Route, Link, useLocation } from "wouter";
+import { Switch, Route, Link, useLocation, Router as WouterRouter } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -63,6 +63,10 @@ function Router() {
   );
 }
 
+// import.meta.env.BASE_URL is "/" by default, "/delaypredict/" when built with BASE_PATH set.
+// wouter's Router base must NOT have a trailing slash.
+const ROUTER_BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+
 function App() {
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -72,7 +76,9 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router />
+        <WouterRouter base={ROUTER_BASE}>
+          <Router />
+        </WouterRouter>
       </TooltipProvider>
     </QueryClientProvider>
   );

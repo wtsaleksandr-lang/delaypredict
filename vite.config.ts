@@ -3,7 +3,13 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
+// BASE_PATH lets us serve the app under a URL prefix like /delaypredict/.
+// Set via env at build time, e.g. BASE_PATH=/delaypredict/ npm run build
+const rawBase = process.env.BASE_PATH || "/";
+const BASE = rawBase.endsWith("/") ? rawBase : rawBase + "/";
+
 export default defineConfig({
+  base: BASE,
   plugins: [
     react(),
     runtimeErrorOverlay(),
