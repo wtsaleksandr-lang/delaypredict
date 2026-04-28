@@ -1,3 +1,6 @@
+// Load .env on local hosts (Replit/etc inject env directly, but local Node doesn't).
+// Must run before any module reads process.env.
+import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
