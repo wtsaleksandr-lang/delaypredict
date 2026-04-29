@@ -24,7 +24,19 @@ declare module "http" {
 // ── Path-prefix support (e.g. served under /delaypredict/) ────────────────────
 // When BASE_PATH is set, strip it from the URL so the rest of the routes match
 // as if served from /. The frontend bundle is built with the same prefix.
-const BASE_PATH = (process.env.BASE_PATH || "").replace(/\/$/, "");
+// MSYS-quirk defense: Git Bash on Windows can mangle "/delaypredict" into
+// "C:/Program Files/Git/delaypredict" when passing env vars; recover the
+// last segment if we see a Windows-style path.
+function sanitizeBasePath(raw: string): string {
+  if (!raw) return "";
+  if (/^[A-Za-z]:[\\/]/.test(raw)) {
+    const segs = raw.split(/[\\/]+/).filter(Boolean);
+    raw = "/" + (segs[segs.length - 1] || "");
+  }
+  if (!raw.startsWith("/")) raw = "/" + raw;
+  return raw.replace(/\/$/, "");
+}
+const BASE_PATH = sanitizeBasePath(process.env.BASE_PATH || "");
 if (BASE_PATH) {
   app.use((req, _res, next) => {
     if (req.url === BASE_PATH) req.url = "/";

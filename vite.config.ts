@@ -5,8 +5,24 @@ import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
 // BASE_PATH lets us serve the app under a URL prefix like /delaypredict/.
 // Set via env at build time, e.g. BASE_PATH=/delaypredict/ npm run build
-const rawBase = process.env.BASE_PATH || "/";
-const BASE = rawBase.endsWith("/") ? rawBase : rawBase + "/";
+//
+// Quirk: Git Bash on Windows (MSYS) silently converts Unix-style values like
+// "/delaypredict" into Windows paths like "C:/Program Files/Git/delaypredict"
+// when they're passed through child processes. We undo that here.
+function sanitizeBase(raw: string): string {
+  if (!raw || raw === "/") return "/";
+  // If it looks like a Windows path (e.g. C:/Program Files/Git/foo), recover
+  // just the last path segment as the intended URL prefix.
+  const winMatch = raw.match(/^[A-Za-z]:[\\/]/);
+  if (winMatch) {
+    const segs = raw.split(/[\\/]+/).filter(Boolean);
+    raw = "/" + (segs[segs.length - 1] || "");
+  }
+  if (!raw.startsWith("/")) raw = "/" + raw;
+  if (!raw.endsWith("/")) raw = raw + "/";
+  return raw;
+}
+const BASE = sanitizeBase(process.env.BASE_PATH || "/");
 
 export default defineConfig({
   base: BASE,
