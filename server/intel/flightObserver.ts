@@ -32,12 +32,30 @@ const PERSIST_DEBOUNCE_MS = 30_000;
 const AUTH_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
 const API = "https://opensky-network.org/api";
 
-// IATA → ICAO mapping for our cargo hubs. OpenSky uses ICAO airport codes.
+// IATA -> ICAO mapping for our cargo hubs. OpenSky uses ICAO airport codes.
+// Must stay in sync with AIR_HUBS in server/intel/ports.ts: an airport that
+// appears in one but not the other will be silently ignored by the observer.
 const IATA_TO_ICAO: Record<string, string> = {
+  // Original 20 (top global cargo)
   HKG: "VHHH", PVG: "ZSPD", DXB: "OMDB", ANC: "PANC", MEM: "KMEM", SDF: "KSDF",
   LAX: "KLAX", ORD: "KORD", MIA: "KMIA", JFK: "KJFK", FRA: "EDDF", AMS: "EHAM",
   CDG: "LFPG", LHR: "EGLL", ICN: "RKSI", NRT: "RJAA", SIN: "WSSS", TPE: "RCTP",
   DOH: "OTHH", IST: "LTFM",
+  // Asia secondary cargo hubs
+  PEK: "ZBAA", CAN: "ZGGG", CTU: "ZUTF", SZX: "ZGSZ",
+  BKK: "VTBS", KUL: "WMKK", CGK: "WIII", MNL: "RPLL", SGN: "VVTS",
+  DEL: "VIDP", BOM: "VABB", BLR: "VOBL",
+  HND: "RJTT", KIX: "RJBB",
+  // Middle East
+  AUH: "OMAA", RUH: "OERK",
+  // Europe (cargo-heavy secondaries)
+  LGG: "EBLG", LUX: "ELLX", CGN: "EDDK", LEJ: "EDDP", MAD: "LEMD",
+  MXP: "LIMC", BRU: "EBBR", ZRH: "LSZH", MUC: "EDDM",
+  // Americas
+  YYZ: "CYYZ", MEX: "MMMX", GRU: "SBGR", BOG: "SKBO", SCL: "SCEL",
+  ATL: "KATL", DFW: "KDFW",
+  // Africa
+  JNB: "FAOR", NBO: "HKJK", CAI: "HECA", ADD: "HAAB",
 };
 const ICAO_TO_IATA: Record<string, string> = Object.fromEntries(
   Object.entries(IATA_TO_ICAO).map(([iata, icao]) => [icao, iata]),
@@ -129,7 +147,7 @@ class FlightObserver {
         if (!r.ok) {
           if (r.status !== 404) console.warn(`[flightObserver] ${icao} → ${r.status}`);
           hubsErr += 1;
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, 600));
           continue;
         }
         hubsOk += 1;
@@ -143,7 +161,7 @@ class FlightObserver {
             observationsThisTick++;
           }
         }
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 600));
       } catch (err) {
         hubsErr += 1;
         console.warn(`[flightObserver] ${icao} failed:`, err instanceof Error ? err.message : err);
@@ -209,29 +227,39 @@ class FlightObserver {
 
   // ── Public read API ────────────────────────────────────────────────────────
 
-  getRouteMean(originHint: string, destinationHint: string, month?: string): { meanHours: number; sampleSize: number; source: string } | null {
+  /**
+   * Best flight-duration estimate for a route in hours. Uses median (p50) which
+   * is outlier-robust, with exponential time-decay (0.9^months_ago) when pooling
+   * across months so recent flights dominate.
+   */
+  getRouteTransitHours(originHint: string, destinationHint: string, month?: string): { medianHours: number; sampleSize: number; source: string } | null {
     const o = matchIata(originHint);
     const d = matchIata(destinationHint);
     if (!o || !d) return null;
 
     if (month) {
       const exact = this.routeStats.get(`${o}|${d}|${month}`);
-      if (exact && exact.count >= 3) return { meanHours: exact.meanHours, sampleSize: exact.count, source: `${month} (${exact.count})` };
+      if (exact && exact.count >= 3) return { medianHours: exact.p50, sampleSize: exact.count, source: `${month} (${exact.count})` };
     }
-    let totalCount = 0;
+    const refMonth = month ?? new Date().toISOString().slice(0, 7);
     let weightedSum = 0;
+    let weightTotal = 0;
+    let totalCount = 0;
     let lastSeen = "";
     this.routeStats.forEach((v, k) => {
       if (!k.startsWith(`${o}|${d}|`)) return;
+      const decay = Math.pow(0.9, monthsBetween(v.month, refMonth));
+      const w = v.count * decay;
+      weightedSum += v.p50 * w;
+      weightTotal += w;
       totalCount += v.count;
-      weightedSum += v.meanHours * v.count;
       if (!lastSeen || v.lastObservedAt > lastSeen) lastSeen = v.lastObservedAt;
     });
-    if (totalCount === 0) return null;
+    if (weightTotal === 0) return null;
     return {
-      meanHours: Number((weightedSum / totalCount).toFixed(2)),
+      medianHours: Number((weightedSum / weightTotal).toFixed(2)),
       sampleSize: totalCount,
-      source: `pooled (${totalCount} obs, latest ${lastSeen.slice(0, 10)})`,
+      source: `pooled p50, time-decayed (${totalCount} obs, latest ${lastSeen.slice(0, 10)})`,
     };
   }
 
@@ -298,6 +326,15 @@ class FlightObserver {
       this.observationsTotal = data.observationsTotal ?? stats.reduce((a, s) => a + s.count, 0);
     } catch { /* fresh */ }
   }
+}
+
+/** Absolute number of months between two YYYY-MM strings. Returns 0 on parse failure. */
+function monthsBetween(a: string, b: string): number {
+  const ma = /^(\d{4})-(\d{2})$/.exec(a);
+  const mb = /^(\d{4})-(\d{2})$/.exec(b);
+  if (!ma || !mb) return 0;
+  const months = (Number(mb[1]) - Number(ma[1])) * 12 + (Number(mb[2]) - Number(ma[2]));
+  return Math.abs(months);
 }
 
 function matchIata(text: string | null | undefined): string | null {

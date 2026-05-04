@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   Plus, Ship, Plane, Package, TrendingUp, TrendingDown,
   AlertTriangle, Target, Globe, Search, X, RotateCcw, Loader2,
@@ -44,7 +45,7 @@ const STATUS_OPTIONS: Array<{ value: string; label: string; dot: string; text: s
 ];
 
 // ── Column config ────────────────────────────────────────────────────────────
-type CellKind = "text" | "money" | "date" | "status" | "mode" | "ref" | "risk" | "delay" | "profit" | "notes" | "insurance";
+type CellKind = "text" | "money" | "date" | "status" | "mode" | "ref" | "risk" | "delay" | "profit" | "notes" | "insurance" | "predicted";
 
 interface ColDef {
   key: string;
@@ -68,7 +69,7 @@ const COLUMNS: ColDef[] = [
   { key: "destination", label: "Destination", kind: "text", editable: true, filter: "text" },
   { key: "etd", label: "ETD", kind: "date", editable: true },
   { key: "eta", label: "ETA", kind: "date", editable: true },
-  { key: "predicted_arrival", label: "Predicted", kind: "date" },
+  { key: "predicted_arrival", label: "Predicted", kind: "predicted" },
   { key: "actual_arrival", label: "Actual", kind: "date" },
   { key: "risk_score", label: "Risk", kind: "risk", filter: "text" },
   { key: "predicted_delay_days", label: "Pred. Delay", kind: "delay" },
@@ -112,8 +113,36 @@ function bestTriggerLabel(s: Shipment): string {
 function filterValueFor(s: Shipment, col: ColDef): string {
   const v = rawCellValue(s, col);
   if (v == null) return "";
-  if (col.kind === "date") return dateOnly(v);
+  if (col.kind === "date" || col.kind === "predicted") return dateOnly(v);
   return String(v);
+}
+
+// ── Prediction confidence helpers ────────────────────────────────────────────
+function confidenceTier(c: number | null | undefined): { label: string; pct: string; tone: string; dot: string } {
+  if (c == null) return { label: "—", pct: "—", tone: "text-muted-foreground/60 border-border bg-muted/30", dot: "bg-muted-foreground/40" };
+  const pct = Math.round(c * 100);
+  if (pct >= 75) return { label: "High", pct: `${pct}%`, tone: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10", dot: "bg-emerald-500" };
+  if (pct >= 50) return { label: "Med", pct: `${pct}%`, tone: "text-amber-400 border-amber-500/40 bg-amber-500/10", dot: "bg-amber-500" };
+  return { label: "Low", pct: `${pct}%`, tone: "text-red-400 border-red-500/40 bg-red-500/10", dot: "bg-red-500" };
+}
+
+interface PredictionSource { source: string; etaIso: string; weight: number; note?: string }
+
+function sourceLabel(src: string): string {
+  switch (src) {
+    case "carrier": return "Carrier ETA";
+    case "ais_vessel": return "Vessel AIS";
+    case "air_flight": return "OpenSky";
+    case "heuristic": return "Risk model";
+    case "lane_history": return "Your history";
+    case "lane_global": return "Global ocean obs";
+    case "flight_global": return "Global flight obs";
+    case "weather_marine": return "Marine weather";
+    case "port_congestion_origin": return "Origin congestion";
+    case "port_congestion_destination": return "Dest. congestion";
+    case "bias_correction": return "Lane bias correction";
+    default: return src;
+  }
 }
 
 // ── Drag-to-pan hook ─────────────────────────────────────────────────────────
@@ -270,13 +299,18 @@ function EditableCell({
 }
 
 // ── Cell renderer ────────────────────────────────────────────────────────────
+interface LaneAccuracy { sampleSize: number; maeDays: number | null; bias: number | null }
+interface LaneBias { biasDays: number; sampleSize: number }
+
 function Cell({
-  shipment, col, onEdit, onOpenNotes,
+  shipment, col, onEdit, onOpenNotes, laneAccuracyMap, laneBiasMap,
 }: {
   shipment: Shipment;
   col: ColDef;
   onEdit: (key: string, value: any) => void;
   onOpenNotes: (s: Shipment) => void;
+  laneAccuracyMap?: Map<string, LaneAccuracy>;
+  laneBiasMap?: Map<string, LaneBias>;
 }) {
   const v = rawCellValue(shipment, col);
 
@@ -296,6 +330,74 @@ function Cell({
       const d = dateOnly(v);
       if (col.editable) return <EditableCell value={d} type="date" onSave={(nv) => onEdit(col.key, nv)} />;
       return d ? <span className="text-xs tabular-nums">{d}</span> : <span className="text-muted-foreground/40">—</span>;
+    }
+
+    case "predicted": {
+      const d = dateOnly(v);
+      if (!d) return <span className="text-muted-foreground/40">—</span>;
+      const conf = shipment.prediction_confidence != null ? Number(shipment.prediction_confidence) : null;
+      const tier = confidenceTier(conf);
+      const sources = (shipment.prediction_sources as PredictionSource[] | null) ?? [];
+      const laneKey = `${(shipment.origin ?? "").trim().toLowerCase()}|${(shipment.destination ?? "").trim().toLowerCase()}|${shipment.mode}`;
+      const laneStat = laneAccuracyMap?.get(laneKey) ?? null;
+      const laneBias = laneBiasMap?.get(laneKey) ?? null;
+      return (
+        <HoverCard openDelay={150} closeDelay={50}>
+          <HoverCardTrigger asChild>
+            <span className="inline-flex items-center gap-1.5 cursor-default">
+              <span className="text-xs tabular-nums">{d}</span>
+              <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded border ${tier.tone}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${tier.dot}`} />
+                {tier.pct}
+              </span>
+            </span>
+          </HoverCardTrigger>
+          <HoverCardContent className="w-80" side="left" align="start">
+            <div className="space-y-2.5 text-xs">
+              <div>
+                <div className="font-semibold text-foreground">Predicted arrival: {d}</div>
+                <div className="text-muted-foreground mt-0.5">
+                  Confidence: <span className={tier.tone.split(" ")[0]}>{tier.label} ({tier.pct})</span>
+                  {sources.length > 0 && <> · {sources.length} signal{sources.length === 1 ? "" : "s"}</>}
+                </div>
+              </div>
+
+              {sources.length > 0 ? (
+                <div className="space-y-1.5 border-t pt-2">
+                  <div className="font-semibold text-foreground text-[11px] uppercase tracking-wider">Inputs</div>
+                  {sources.map((src, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <span className="font-mono text-[10px] text-muted-foreground w-20 shrink-0 pt-0.5">{sourceLabel(src.source)}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="tabular-nums">{dateOnly(src.etaIso)} {src.weight > 0 && <span className="text-muted-foreground/70">· w {src.weight.toFixed(2)}</span>}</div>
+                        {src.note && <div className="text-muted-foreground/80 text-[10px] leading-tight">{src.note}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-muted-foreground border-t pt-2">No signals available — falling back to carrier ETA.</div>
+              )}
+
+              {(laneStat || laneBias) && (
+                <div className="space-y-1 border-t pt-2">
+                  <div className="font-semibold text-foreground text-[11px] uppercase tracking-wider">On this lane</div>
+                  {laneStat && laneStat.maeDays != null && (
+                    <div className="text-muted-foreground">
+                      MAE <span className="text-foreground font-bold tabular-nums">{laneStat.maeDays.toFixed(1)}d</span> across {laneStat.sampleSize} delivered shipment{laneStat.sampleSize === 1 ? "" : "s"}
+                    </div>
+                  )}
+                  {laneBias && (
+                    <div className="text-muted-foreground">
+                      Bias correction applied: <span className="text-foreground font-bold tabular-nums">{laneBias.biasDays > 0 ? "+" : ""}{laneBias.biasDays.toFixed(1)}d</span> (n={laneBias.sampleSize})
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </HoverCardContent>
+        </HoverCard>
+      );
     }
 
     case "money": {
@@ -408,7 +510,26 @@ export default function ShipmentsList() {
     overall: { sampleSize: number; maeDays: number | null; bias: number | null };
     byMode: { ocean: any; air: any };
     bySource: Array<{ source: string; sampleSize: number; maeDays: number | null; bias: number | null }>;
-  }>({ queryKey: ["/api/predictions/accuracy"] });
+    byLane?: Array<{ origin: string; destination: string; mode: string; sampleSize: number; maeDays: number | null; bias: number | null }>;
+    decisionTime?: { sampleSize: number; maeDays: number | null; bias: number | null; pctWithin2d: number | null };
+    laneBiases?: Array<{ key: string; biasDays: number; sampleSize: number }>;
+  }>({ queryKey: ["/api/predictions/accuracy"], refetchInterval: 60_000 });
+
+  // Build lane-keyed maps once per accuracy refresh so the Cell renderer doesn't recompute per row.
+  const laneAccuracyMap = useMemo(() => {
+    const m = new Map<string, LaneAccuracy>();
+    (accuracy?.byLane ?? []).forEach((l) => {
+      m.set(`${l.origin}|${l.destination}|${l.mode}`, { sampleSize: l.sampleSize, maeDays: l.maeDays, bias: l.bias });
+    });
+    return m;
+  }, [accuracy?.byLane]);
+  const laneBiasMap = useMemo(() => {
+    const m = new Map<string, LaneBias>();
+    (accuracy?.laneBiases ?? []).forEach((b) => {
+      m.set(b.key, { biasDays: b.biasDays, sampleSize: b.sampleSize });
+    });
+    return m;
+  }, [accuracy?.laneBiases]);
   const { data: observer } = useQuery<{
     enabled: boolean; vesselsTracked: number; lanesLearned: number; observationsTotal: number;
     topLanes: Array<{ origin: string; destination: string; count: number; meanDays: number }>;
@@ -836,7 +957,7 @@ export default function ShipmentsList() {
                 >
                   {COLUMNS.map((c) => (
                     <td key={c.key} data-sticky={c.sticky ? "true" : undefined} className={c.className}>
-                      <Cell shipment={s} col={c} onEdit={(k, v) => handleEdit(s.id, k, v)} onOpenNotes={setNotesTarget} />
+                      <Cell shipment={s} col={c} onEdit={(k, v) => handleEdit(s.id, k, v)} onOpenNotes={setNotesTarget} laneAccuracyMap={laneAccuracyMap} laneBiasMap={laneBiasMap} />
                     </td>
                   ))}
                   <td className="actions-cell">

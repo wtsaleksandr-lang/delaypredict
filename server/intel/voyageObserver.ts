@@ -223,32 +223,41 @@ class VoyageObserver {
 
   // ── Public read API ────────────────────────────────────────────────────────
 
-  /** Return mean transit days for a lane, optionally month-aware. */
-  getLaneMean(originHint: string, destinationHint: string, month?: string): { meanDays: number; sampleSize: number; source: string } | null {
+  /**
+   * Best transit-time estimate for a lane in days. Uses median (p50) which is
+   * outlier-robust, and applies exponential time-decay (0.9^months_ago) when
+   * pooling across months so recent observations dominate.
+   */
+  getLaneTransitDays(originHint: string, destinationHint: string, month?: string): { medianDays: number; sampleSize: number; source: string } | null {
     const o = resolvePort(originHint);
     const d = resolvePort(destinationHint);
     if (!o?.unlocode || !d?.unlocode) return null;
 
-    // 1. Try same-month
+    // 1. Try same-month — return that month's p50 directly (most accurate)
     if (month) {
       const exact = this.laneStats.get(`${o.unlocode}|${d.unlocode}|${month}`);
-      if (exact && exact.count >= 3) return { meanDays: exact.meanTransitDays, sampleSize: exact.count, source: `${month} (${exact.count})` };
+      if (exact && exact.count >= 3) return { medianDays: exact.p50, sampleSize: exact.count, source: `${month} (${exact.count})` };
     }
-    // 2. Pool all months for this lane
-    let totalCount = 0;
+    // 2. Pool across months with time-decay weighting on the per-month p50s.
+    const refMonth = month ?? new Date().toISOString().slice(0, 7);
     let weightedSum = 0;
+    let weightTotal = 0;
+    let totalCount = 0;
     let lastSeen: string = "";
     this.laneStats.forEach((v, k) => {
       if (!k.startsWith(`${o.unlocode}|${d.unlocode}|`)) return;
+      const decay = Math.pow(0.9, monthsBetween(v.month, refMonth));
+      const w = v.count * decay;
+      weightedSum += v.p50 * w;
+      weightTotal += w;
       totalCount += v.count;
-      weightedSum += v.meanTransitDays * v.count;
       if (!lastSeen || v.lastObservedAt > lastSeen) lastSeen = v.lastObservedAt;
     });
-    if (totalCount === 0) return null;
+    if (weightTotal === 0) return null;
     return {
-      meanDays: Number((weightedSum / totalCount).toFixed(2)),
+      medianDays: Number((weightedSum / weightTotal).toFixed(2)),
       sampleSize: totalCount,
-      source: `pooled across months (${totalCount} obs, latest ${lastSeen.slice(0, 10)})`,
+      source: `pooled p50, time-decayed (${totalCount} obs, latest ${lastSeen.slice(0, 10)})`,
     };
   }
 
@@ -343,6 +352,15 @@ class VoyageObserver {
     await fs.mkdir(path.dirname(OBSERVATIONS_FILE), { recursive: true });
     await fs.appendFile(OBSERVATIONS_FILE, JSON.stringify(obs) + "\n", "utf-8");
   }
+}
+
+/** Absolute number of months between two YYYY-MM strings. Returns 0 on parse failure. */
+function monthsBetween(a: string, b: string): number {
+  const ma = /^(\d{4})-(\d{2})$/.exec(a);
+  const mb = /^(\d{4})-(\d{2})$/.exec(b);
+  if (!ma || !mb) return 0;
+  const months = (Number(mb[1]) - Number(ma[1])) * 12 + (Number(mb[2]) - Number(ma[2]));
+  return Math.abs(months);
 }
 
 function portWithinRadius(lat: number, lon: number): PortEntry | null {

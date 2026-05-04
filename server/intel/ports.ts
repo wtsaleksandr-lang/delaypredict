@@ -108,6 +108,47 @@ const AIR_HUBS: PortEntry[] = [
   { name: "Taipei Taoyuan", iata: "TPE", lat: 25.0797, lon: 121.2342, radiusKm: 15, aliases: ["tpe", "taoyuan"], kind: "air" },
   { name: "Doha (DOH)", iata: "DOH", lat: 25.2609, lon: 51.5144, radiusKm: 15, aliases: ["doh", "doha"], kind: "air" },
   { name: "Istanbul (IST)", iata: "IST", lat: 41.2753, lon: 28.7519, radiusKm: 15, aliases: ["ist", "istanbul"], kind: "air" },
+  // Asia secondary cargo hubs
+  { name: "Beijing Capital (PEK)", iata: "PEK", lat: 40.0801, lon: 116.5846, radiusKm: 15, aliases: ["pek", "beijing capital"], kind: "air" },
+  { name: "Guangzhou Baiyun (CAN)", iata: "CAN", lat: 23.3924, lon: 113.2988, radiusKm: 15, aliases: ["can", "baiyun", "guangzhou airport"], kind: "air" },
+  { name: "Chengdu Tianfu (CTU)", iata: "CTU", lat: 30.5785, lon: 103.9471, radiusKm: 15, aliases: ["ctu", "chengdu"], kind: "air" },
+  { name: "Shenzhen Bao'an (SZX)", iata: "SZX", lat: 22.6393, lon: 113.8108, radiusKm: 15, aliases: ["szx", "shenzhen airport", "bao'an"], kind: "air" },
+  { name: "Bangkok Suvarnabhumi (BKK)", iata: "BKK", lat: 13.6900, lon: 100.7501, radiusKm: 15, aliases: ["bkk", "suvarnabhumi", "bangkok"], kind: "air" },
+  { name: "Kuala Lumpur (KUL)", iata: "KUL", lat: 2.7456, lon: 101.7099, radiusKm: 15, aliases: ["kul", "kuala lumpur"], kind: "air" },
+  { name: "Jakarta Soekarno-Hatta (CGK)", iata: "CGK", lat: -6.1256, lon: 106.6559, radiusKm: 15, aliases: ["cgk", "jakarta", "soekarno"], kind: "air" },
+  { name: "Manila (MNL)", iata: "MNL", lat: 14.5086, lon: 121.0194, radiusKm: 12, aliases: ["mnl", "manila"], kind: "air" },
+  { name: "Ho Chi Minh City (SGN)", iata: "SGN", lat: 10.8188, lon: 106.6519, radiusKm: 12, aliases: ["sgn", "saigon", "tan son nhat"], kind: "air" },
+  { name: "Delhi (DEL)", iata: "DEL", lat: 28.5562, lon: 77.1000, radiusKm: 15, aliases: ["del", "delhi", "indira gandhi"], kind: "air" },
+  { name: "Mumbai (BOM)", iata: "BOM", lat: 19.0896, lon: 72.8656, radiusKm: 12, aliases: ["bom", "mumbai", "bombay"], kind: "air" },
+  { name: "Bangalore (BLR)", iata: "BLR", lat: 13.1986, lon: 77.7066, radiusKm: 12, aliases: ["blr", "bangalore", "bengaluru"], kind: "air" },
+  { name: "Tokyo Haneda (HND)", iata: "HND", lat: 35.5523, lon: 139.7798, radiusKm: 12, aliases: ["hnd", "haneda"], kind: "air" },
+  { name: "Osaka Kansai (KIX)", iata: "KIX", lat: 34.4348, lon: 135.2440, radiusKm: 12, aliases: ["kix", "kansai", "osaka"], kind: "air" },
+  // Middle East
+  { name: "Abu Dhabi (AUH)", iata: "AUH", lat: 24.4330, lon: 54.6511, radiusKm: 15, aliases: ["auh", "abu dhabi"], kind: "air" },
+  { name: "Riyadh (RUH)", iata: "RUH", lat: 24.9576, lon: 46.6988, radiusKm: 15, aliases: ["ruh", "riyadh"], kind: "air" },
+  // Europe (cargo-heavy secondaries)
+  { name: "Liege (LGG)", iata: "LGG", lat: 50.6374, lon: 5.4434, radiusKm: 10, aliases: ["lgg", "liege"], kind: "air" },
+  { name: "Luxembourg (LUX)", iata: "LUX", lat: 49.6266, lon: 6.2114, radiusKm: 10, aliases: ["lux", "luxembourg"], kind: "air" },
+  { name: "Cologne Bonn (CGN)", iata: "CGN", lat: 50.8659, lon: 7.1427, radiusKm: 12, aliases: ["cgn", "cologne", "koeln"], kind: "air" },
+  { name: "Leipzig (LEJ)", iata: "LEJ", lat: 51.4324, lon: 12.2416, radiusKm: 10, aliases: ["lej", "leipzig"], kind: "air" },
+  { name: "Madrid (MAD)", iata: "MAD", lat: 40.4983, lon: -3.5676, radiusKm: 15, aliases: ["mad", "madrid", "barajas"], kind: "air" },
+  { name: "Milan Malpensa (MXP)", iata: "MXP", lat: 45.6306, lon: 8.7281, radiusKm: 12, aliases: ["mxp", "malpensa", "milan"], kind: "air" },
+  { name: "Brussels (BRU)", iata: "BRU", lat: 50.9014, lon: 4.4844, radiusKm: 12, aliases: ["bru", "brussels", "zaventem"], kind: "air" },
+  { name: "Zurich (ZRH)", iata: "ZRH", lat: 47.4647, lon: 8.5492, radiusKm: 10, aliases: ["zrh", "zurich"], kind: "air" },
+  { name: "Munich (MUC)", iata: "MUC", lat: 48.3538, lon: 11.7861, radiusKm: 12, aliases: ["muc", "munich", "muenchen"], kind: "air" },
+  // Americas (cargo-heavy)
+  { name: "Toronto Pearson (YYZ)", iata: "YYZ", lat: 43.6777, lon: -79.6248, radiusKm: 15, aliases: ["yyz", "toronto", "pearson"], kind: "air" },
+  { name: "Mexico City (MEX)", iata: "MEX", lat: 19.4361, lon: -99.0719, radiusKm: 15, aliases: ["mex", "mexico city"], kind: "air" },
+  { name: "Sao Paulo Guarulhos (GRU)", iata: "GRU", lat: -23.4356, lon: -46.4731, radiusKm: 15, aliases: ["gru", "guarulhos", "sao paulo"], kind: "air" },
+  { name: "Bogota (BOG)", iata: "BOG", lat: 4.7016, lon: -74.1469, radiusKm: 12, aliases: ["bog", "bogota", "el dorado"], kind: "air" },
+  { name: "Santiago (SCL)", iata: "SCL", lat: -33.3930, lon: -70.7858, radiusKm: 12, aliases: ["scl", "santiago"], kind: "air" },
+  { name: "Atlanta (ATL)", iata: "ATL", lat: 33.6407, lon: -84.4277, radiusKm: 15, aliases: ["atl", "atlanta", "hartsfield"], kind: "air" },
+  { name: "Dallas Fort Worth (DFW)", iata: "DFW", lat: 32.8998, lon: -97.0403, radiusKm: 15, aliases: ["dfw", "dallas", "fort worth"], kind: "air" },
+  // Africa
+  { name: "Johannesburg (JNB)", iata: "JNB", lat: -26.1392, lon: 28.2460, radiusKm: 15, aliases: ["jnb", "johannesburg", "tambo"], kind: "air" },
+  { name: "Nairobi (NBO)", iata: "NBO", lat: -1.3192, lon: 36.9277, radiusKm: 12, aliases: ["nbo", "nairobi"], kind: "air" },
+  { name: "Cairo (CAI)", iata: "CAI", lat: 30.1219, lon: 31.4056, radiusKm: 12, aliases: ["cai", "cairo"], kind: "air" },
+  { name: "Addis Ababa (ADD)", iata: "ADD", lat: 8.9779, lon: 38.7993, radiusKm: 12, aliases: ["add", "addis ababa", "bole"], kind: "air" },
 ];
 
 const ALL: PortEntry[] = [...OCEAN_PORTS, ...AIR_HUBS];
