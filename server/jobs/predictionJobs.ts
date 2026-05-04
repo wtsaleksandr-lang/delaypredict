@@ -1,10 +1,34 @@
 import { aisStream } from "../tracking/vessels/aisstream";
 import { handleAisUpdate, refreshAllPredictions } from "../intel/predictor";
+import { rebuildBiasCache } from "../intel/predictionHistory";
 import { storage } from "../storage";
 
 const PERIODIC_MS = 15 * 60 * 1000; // 15 min
+const BIAS_REBUILD_MS = 60 * 60 * 1000; // hourly is plenty — only changes on delivery events
 
 let timer: NodeJS.Timeout | undefined;
+let biasTimer: NodeJS.Timeout | undefined;
+
+async function refreshBiasCache(): Promise<void> {
+  try {
+    const all = await storage.listShipments();
+    const delivered = all.filter((s) => s.status === "delivered" && s.actual_arrival);
+    const r = await rebuildBiasCache(
+      delivered.map((s) => ({
+        id: s.id,
+        origin: s.origin ?? null,
+        destination: s.destination ?? null,
+        mode: s.mode,
+        actual_arrival: s.actual_arrival,
+      })),
+    );
+    if (r.scored.length > 0) {
+      console.log(`[predictor] bias cache rebuilt — ${r.scored.length} scored predictions across delivered shipments`);
+    }
+  } catch (err) {
+    console.warn("[predictor] bias rebuild failed:", err instanceof Error ? err.message : err);
+  }
+}
 
 export function startPredictionJobs() {
   if (timer) return;
@@ -21,6 +45,11 @@ export function startPredictionJobs() {
       console.warn("[predictor] AIS update handler failed:", err instanceof Error ? err.message : err);
     }
   });
+
+  // Warm the lane-bias cache once at boot so corrections fire on the first
+  // refresh, not just after someone hits /api/predictions/accuracy.
+  refreshBiasCache();
+  biasTimer = setInterval(refreshBiasCache, BIAS_REBUILD_MS);
 
   // Periodic sweep (catches shipments with no AIS data — carrier ETA + history only)
   const tick = async () => {

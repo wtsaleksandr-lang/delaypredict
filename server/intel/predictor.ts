@@ -27,9 +27,12 @@ import { resolvePort, haversineKm } from "./ports";
 import { voyageObserver } from "./voyageObserver";
 import { OpenSkyProvider } from "../tracking/providers/opensky";
 import { flightObserver } from "./flightObserver";
+import { recordPrediction, getLaneBiasDays, rebuildBiasCache, getAllBiases } from "./predictionHistory";
+import { getMarineRiskForLane } from "./marineWeather";
+import { getPortCongestion } from "./portCongestion";
 
 interface EtaSource {
-  source: "carrier" | "ais_vessel" | "air_flight" | "heuristic" | "lane_history" | "lane_global" | "flight_global";
+  source: "carrier" | "ais_vessel" | "air_flight" | "heuristic" | "lane_history" | "lane_global" | "flight_global" | "weather_marine" | "port_congestion_origin" | "port_congestion_destination";
   etaIso: string;
   weight: number; // 0..1
   note?: string;
@@ -49,6 +52,9 @@ const SOURCE_WEIGHTS: Record<EtaSource["source"], number> = {
   ais_vessel: 0.25,    // ocean — vessel-declared via AIS ShipStaticData
   air_flight: 0.25,    // air — actual departure delay via OpenSky
   heuristic: 0.15,
+  weather_marine: 0.10,
+  port_congestion_origin: 0.05,
+  port_congestion_destination: 0.10,
   lane_history: 0.10,  // your own delivered shipments
   lane_global: 0.15,   // global ocean voyage observer
   flight_global: 0.15, // global air route observer
@@ -160,29 +166,86 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
         });
       }
 
-      // 5. Global lane mean — ocean: from the voyage observer
+      // 5. Global lane median - ocean: from the voyage observer
       const month = s.etd ? String(s.etd).slice(0, 7) : undefined;
       if (s.mode === "ocean") {
-        const global = voyageObserver.getLaneMean(s.origin, s.destination, month);
+        const global = voyageObserver.getLaneTransitDays(s.origin, s.destination, month);
         if (global) {
-          const d = new Date(etd + global.meanDays * 86400_000);
+          const d = new Date(etd + global.medianDays * 86400_000);
           sources.push({
             source: "lane_global",
             etaIso: d.toISOString(),
             weight: SOURCE_WEIGHTS.lane_global,
-            note: `Global AIS-observed mean: ${global.meanDays.toFixed(1)}d (${global.source})`,
+            note: `Global AIS-observed median: ${global.medianDays.toFixed(1)}d (${global.source})`,
           });
         }
       } else if (s.mode === "air") {
-        // 5b. Global flight route mean — air: from the flight observer
-        const flight = flightObserver.getRouteMean(s.origin, s.destination, month);
+        // 5b. Global flight route median - air: from the flight observer
+        const flight = flightObserver.getRouteTransitHours(s.origin, s.destination, month);
         if (flight) {
-          const d = new Date(etd + (flight.meanHours / 24) * 86400_000);
+          const d = new Date(etd + (flight.medianHours / 24) * 86400_000);
           sources.push({
             source: "flight_global",
             etaIso: d.toISOString(),
             weight: SOURCE_WEIGHTS.flight_global,
-            note: `Global OpenSky-observed mean: ${flight.meanHours.toFixed(1)}h (${flight.source})`,
+            note: `Global OpenSky-observed median: ${flight.medianHours.toFixed(1)}h (${flight.source})`,
+          });
+        }
+      }
+    }
+  }
+
+  // 6. Marine weather — sample wave-height forecast along the great-circle.
+  // Adds a delay if rough seas are expected within the next 7 days. Free,
+  // no API key. Ocean shipments only (great-circle on land is meaningless).
+  if (s.mode === "ocean" && s.origin && s.destination && s.eta) {
+    const carrierEtaMs = new Date(s.eta as any).getTime();
+    if (!isNaN(carrierEtaMs)) {
+      try {
+        const marine = await getMarineRiskForLane(s.origin, s.destination);
+        if (marine && marine.delayDays > 0) {
+          const d = new Date(carrierEtaMs + marine.delayDays * 86400_000);
+          sources.push({
+            source: "weather_marine",
+            etaIso: d.toISOString(),
+            weight: SOURCE_WEIGHTS.weather_marine,
+            note: `Open-Meteo: ${marine.source}; +${marine.delayDays.toFixed(1)}d`,
+          });
+        }
+      } catch (err) {
+        // Open-Meteo is best-effort — silent skip on failure
+      }
+    }
+  }
+
+  // 7. Port congestion — count vessels at anchor near origin (delays sailing)
+  // and destination (delays berthing). Soft signal: only kicks in when
+  // queues are visibly forming.
+  if (s.mode === "ocean" && s.eta) {
+    const carrierEtaMs = new Date(s.eta as any).getTime();
+    if (!isNaN(carrierEtaMs)) {
+      const destCong = getPortCongestion(s.destination);
+      if (destCong && destCong.delayDays > 0) {
+        const d = new Date(carrierEtaMs + destCong.delayDays * 86400_000);
+        sources.push({
+          source: "port_congestion_destination",
+          etaIso: d.toISOString(),
+          weight: SOURCE_WEIGHTS.port_congestion_destination,
+          note: `${destCong.severity} congestion at destination: ${destCong.source}; +${destCong.delayDays.toFixed(1)}d`,
+        });
+      }
+      const oriCong = getPortCongestion(s.origin);
+      if (oriCong && oriCong.delayDays > 0) {
+        // Origin congestion only matters if we haven't departed yet
+        const etdMs = s.etd ? new Date(s.etd as any).getTime() : 0;
+        const stillToSail = !s.actual_departure && etdMs > Date.now() - 86400_000;
+        if (stillToSail) {
+          const d = new Date(carrierEtaMs + oriCong.delayDays * 86400_000);
+          sources.push({
+            source: "port_congestion_origin",
+            etaIso: d.toISOString(),
+            weight: SOURCE_WEIGHTS.port_congestion_origin,
+            note: `${oriCong.severity} congestion at origin: ${oriCong.source}; +${oriCong.delayDays.toFixed(1)}d`,
           });
         }
       }
@@ -195,7 +258,23 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
 
   // Weighted-average predicted timestamp
   const totalWeight = sources.reduce((a, b) => a + b.weight, 0);
-  const weightedMs = sources.reduce((a, b) => a + new Date(b.etaIso).getTime() * (b.weight / totalWeight), 0);
+  let weightedMs = sources.reduce((a, b) => a + new Date(b.etaIso).getTime() * (b.weight / totalWeight), 0);
+
+  // Per-lane bias correction: if past delivered shipments on this lane have
+  // been arriving systematically later (or earlier) than we predicted, fold
+  // that mean error back into the new prediction. Requires at least 3 prior
+  // deliveries on this exact lane (origin|destination|mode).
+  const bias = getLaneBiasDays(s.origin, s.destination, s.mode as "ocean" | "air");
+  if (bias) {
+    weightedMs += bias.biasDays * 86400_000;
+    sources.push({
+      source: "bias_correction" as any,
+      etaIso: new Date(weightedMs).toISOString(),
+      weight: 0, // information-only, doesn't affect future weighted averages
+      note: `Lane bias correction: ${bias.biasDays > 0 ? "+" : ""}${bias.biasDays.toFixed(1)}d (n=${bias.sampleSize})`,
+    });
+  }
+
   const predicted = new Date(weightedMs).toISOString();
 
   // Confidence: high when sources agree within ±2d, lower as they spread
@@ -220,6 +299,23 @@ export async function recomputePredictionForShipment(shipmentId: string, force =
     prediction_confidence: (confidence.toFixed(2) as any),
     prediction_sources: sources as any,
     prediction_updated_at: new Date(),
+  });
+
+  // Append to prediction-history.jsonl for the feedback loop. Recorded on
+  // every recompute so we can later pick the prediction made at "decision
+  // time" (~5d before arrival) rather than the last refresh before delivery.
+  await recordPrediction({
+    shipment_id: s.id,
+    predicted_at: new Date().toISOString(),
+    predicted_arrival: predicted,
+    prediction_confidence: confidence,
+    origin: s.origin ?? null,
+    destination: s.destination ?? null,
+    mode: s.mode as "ocean" | "air",
+    carrier_scac: s.carrier_scac ?? null,
+    eta: s.eta ? String(s.eta) : null,
+    etd: s.etd ? String(s.etd) : null,
+    sources: sources.map((x) => ({ source: x.source, etaIso: x.etaIso, weight: x.weight })),
   });
 
   return result;
@@ -326,6 +422,11 @@ interface MaeStat {
 interface SourceMae extends MaeStat {
   source: string;
 }
+interface LaneMae extends MaeStat {
+  origin: string;
+  destination: string;
+  mode: string;
+}
 
 /**
  * Per-mode + per-source accuracy across delivered shipments.
@@ -344,6 +445,9 @@ export async function computePredictionAccuracy(): Promise<{
   overall: MaeStat;
   byMode: { ocean: MaeStat; air: MaeStat };
   bySource: SourceMae[];
+  byLane: LaneMae[];
+  decisionTime: { sampleSize: number; maeDays: number | null; bias: number | null; pctWithin2d: number | null };
+  laneBiases: Array<{ key: string; biasDays: number; sampleSize: number }>;
 }> {
   const all = await storage.listShipments();
   const delivered = all.filter((s) => s.status === "delivered" && s.predicted_arrival && s.actual_arrival);
@@ -364,14 +468,20 @@ export async function computePredictionAccuracy(): Promise<{
     };
   };
 
-  const consensusRows: Array<{ mode: string; predMs: number; actMs: number }> = [];
+  const consensusRows: Array<{ mode: string; origin: string; destination: string; predMs: number; actMs: number }> = [];
   const sourceBuckets = new Map<string, Array<{ predMs: number; actMs: number }>>();
 
   for (const s of delivered) {
     const predMs = new Date(s.predicted_arrival as any).getTime();
     const actMs = new Date(s.actual_arrival as any).getTime();
     if (isNaN(predMs) || isNaN(actMs)) continue;
-    consensusRows.push({ mode: s.mode, predMs, actMs });
+    consensusRows.push({
+      mode: s.mode,
+      origin: (s.origin ?? "").trim().toLowerCase(),
+      destination: (s.destination ?? "").trim().toLowerCase(),
+      predMs,
+      actMs,
+    });
 
     const sources = (s.prediction_sources as any[]) ?? [];
     for (const src of sources) {
@@ -394,5 +504,60 @@ export async function computePredictionAccuracy(): Promise<{
   });
   bySource.sort((a, b) => (a.maeDays ?? 99) - (b.maeDays ?? 99));
 
-  return { overall, byMode: { ocean, air }, bySource };
+  // Per-lane MAE: aggregate consensus rows by (mode, origin, destination)
+  const laneBuckets = new Map<string, { mode: string; origin: string; destination: string; rows: Array<{ predMs: number; actMs: number }> }>();
+  for (const r of consensusRows) {
+    if (!r.origin || !r.destination) continue;
+    const k = `${r.mode}|${r.origin}|${r.destination}`;
+    let b = laneBuckets.get(k);
+    if (!b) { b = { mode: r.mode, origin: r.origin, destination: r.destination, rows: [] }; laneBuckets.set(k, b); }
+    b.rows.push({ predMs: r.predMs, actMs: r.actMs });
+  }
+  const byLane: LaneMae[] = Array.from(laneBuckets.values())
+    .map((b) => ({ origin: b.origin, destination: b.destination, mode: b.mode, ...compute(b.rows) }))
+    .filter((l) => l.sampleSize >= 2)
+    .sort((a, b) => (a.maeDays ?? 99) - (b.maeDays ?? 99));
+
+  // Rebuild bias cache from prediction-history.jsonl + delivered shipments,
+  // and use it to compute "decision-time" accuracy: prediction taken ~5 days
+  // before actual arrival, not the last-refresh prediction. Lower-bound
+  // estimate of how the system performs in real use.
+  const { scored } = await rebuildBiasCache(
+    delivered.map((s) => ({
+      id: s.id,
+      origin: s.origin ?? null,
+      destination: s.destination ?? null,
+      mode: s.mode,
+      actual_arrival: s.actual_arrival,
+    })),
+  );
+
+  let decisionTime: { sampleSize: number; maeDays: number | null; bias: number | null; pctWithin2d: number | null };
+  if (scored.length === 0) {
+    decisionTime = { sampleSize: 0, maeDays: null, bias: null, pctWithin2d: null };
+  } else {
+    let absSum = 0;
+    let signedSum = 0;
+    let within2 = 0;
+    for (const s of scored) {
+      absSum += Math.abs(s.errorDays);
+      signedSum += s.errorDays;
+      if (Math.abs(s.errorDays) <= 2) within2 += 1;
+    }
+    decisionTime = {
+      sampleSize: scored.length,
+      maeDays: Number((absSum / scored.length).toFixed(2)),
+      bias: Number((signedSum / scored.length).toFixed(2)),
+      pctWithin2d: Number(((within2 / scored.length) * 100).toFixed(1)),
+    };
+  }
+
+  return {
+    overall,
+    byMode: { ocean, air },
+    bySource,
+    byLane,
+    decisionTime,
+    laneBiases: getAllBiases(),
+  };
 }
