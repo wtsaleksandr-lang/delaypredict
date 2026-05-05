@@ -149,11 +149,11 @@ export function HowItWorksCard() {
         <Section
           icon={Layers}
           title="Signals we fuse"
-          summary="Carrier ETA + live vessel/flight tracking + weather + port congestion + your history"
+          summary="Claimed ETA + live vessel/flight tracking + weather + port congestion + your history"
         >
           <p>The predictor blends up to 8 independent signals per shipment, weighted by reliability:</p>
           <ul className="list-disc pl-4 space-y-1">
-            <li><strong>Carrier ETA</strong> (weight 0.35) — the carrier's published ETA</li>
+            <li><strong>Claimed ETA</strong> (weight 0.35) — the carrier's own published ETA</li>
             <li><strong>AIS vessel ETA</strong> (0.25, ocean) — live vessel-declared arrival from AISStream</li>
             <li><strong>Flight tracking</strong> (0.25, air) — actual departure delay from OpenSky Network</li>
             <li><strong>Heuristic risk model</strong> (0.15) — rule-based delay days from route/season/carrier risk</li>

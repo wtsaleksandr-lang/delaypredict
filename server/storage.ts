@@ -22,6 +22,28 @@ export interface IStorage {
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const SHIPMENTS_FILE = path.join(DATA_DIR, "shipments.json");
 
+/**
+ * Lock the policy reference ETD/ETA the moment a shipment first moves into
+ * in_transit (or actual_departure becomes known). This is the parametric
+ * insurance reference timestamp — once locked, later carrier ETA updates
+ * MUST NOT overwrite it. Mutates `merged` in place.
+ */
+function maybeLockPolicyEta(prev: Shipment, merged: Shipment): void {
+  // Already locked → never re-lock.
+  if (merged.policy_eta_locked) return;
+
+  const movingToInTransit =
+    prev.status !== "in_transit" &&
+    (merged.status === "in_transit" || (merged.actual_departure && !prev.actual_departure));
+
+  if (!movingToInTransit) return;
+  if (!merged.eta) return; // nothing meaningful to lock
+
+  (merged as any).policy_etd_locked = merged.etd ?? prev.etd ?? null;
+  (merged as any).policy_eta_locked = merged.eta ?? prev.eta ?? null;
+  (merged as any).policy_locked_at = new Date();
+}
+
 // File-backed JSON storage. Good enough for personal/internal use.
 // Swap to PostgresStorage later if multiple users / concurrency become a concern.
 export class JsonFileStorage implements IStorage {
@@ -40,7 +62,7 @@ export class JsonFileStorage implements IStorage {
       for (const s of parsed) {
         // Re-hydrate Date fields that JSON serialized as strings
         const reh: any = { ...s };
-        for (const k of ["created_at", "updated_at", "tracking_last_polled", "tracking_last_event_at", "ais_eta", "ais_static_updated_at", "predicted_arrival", "prediction_updated_at"]) {
+        for (const k of ["created_at", "updated_at", "tracking_last_polled", "tracking_last_event_at", "ais_eta", "ais_static_updated_at", "predicted_arrival", "prediction_updated_at", "policy_locked_at"]) {
           if (reh[k] && typeof reh[k] === "string") reh[k] = new Date(reh[k]);
         }
         this.shipments.set(s.id, reh as Shipment);
@@ -136,6 +158,9 @@ export class JsonFileStorage implements IStorage {
       ais_eta: null,
       ais_nav_status: null,
       ais_static_updated_at: null,
+      policy_etd_locked: null,
+      policy_eta_locked: null,
+      policy_locked_at: null,
       predicted_arrival: null,
       predicted_delay_days: null,
       prediction_confidence: null,
@@ -171,6 +196,7 @@ export class JsonFileStorage implements IStorage {
       ),
       updated_at: new Date(),
     } as Shipment;
+    maybeLockPolicyEta(existing, merged);
     this.shipments.set(id, merged);
     await this.persist();
     return merged;
@@ -181,6 +207,7 @@ export class JsonFileStorage implements IStorage {
     const existing = this.shipments.get(id);
     if (!existing) return undefined;
     const merged = { ...existing, ...patch, updated_at: new Date() } as Shipment;
+    maybeLockPolicyEta(existing, merged);
     this.shipments.set(id, merged);
     await this.persist();
     return merged;

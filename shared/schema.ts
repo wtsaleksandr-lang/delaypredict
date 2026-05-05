@@ -79,6 +79,14 @@ export const shipments = pgTable("shipments", {
   prediction_sources: jsonb("prediction_sources"), // array of {source, eta, weight}
   prediction_updated_at: timestamp("prediction_updated_at"),
 
+  // Policy ETA snapshot — frozen at the moment the shipment moves to in_transit.
+  // Per the parametric insurance product, once the vessel/aircraft has departed,
+  // the first leg's ETD and Final ETA are FINAL. Trigger fires when actual ATA
+  // is >= policy_eta_locked + chosen trigger. We never overwrite these once set.
+  policy_etd_locked: date("policy_etd_locked"),
+  policy_eta_locked: date("policy_eta_locked"),
+  policy_locked_at: timestamp("policy_locked_at"),
+
   // Lifecycle
   status: text("status").notNull().default("planned"), // planned | in_transit | delivered | delayed | cancelled
   notes: text("notes"),

@@ -24,6 +24,8 @@ const SECRET_KEYS = new Set([
   "HAPAG_CLIENT_SECRET",
   "CMACGM_CLIENT_ID",
   "CMACGM_CLIENT_SECRET",
+  "OPENSKY_CLIENT_ID",
+  "OPENSKY_CLIENT_SECRET",
 ]);
 
 const KNOWN_KEYS: Array<{
@@ -36,6 +38,8 @@ const KNOWN_KEYS: Array<{
   { key: "ANTHROPIC_API_KEY", label: "Anthropic API key", description: "Claude — used for shipment doc extraction + LLM route oracle. Get one at console.anthropic.com.", type: "secret", group: "AI" },
   { key: "AISSTREAM_API_KEY", label: "AISStream API key", description: "Live vessel positions + ETA via AIS. Free tier at aisstream.io.", type: "secret", group: "Vessel tracking" },
   { key: "ENABLE_VOYAGE_OBSERVER", label: "Enable global voyage observer", description: "Set to 'true' to learn lane transit-time medians from all global AIS traffic (requires AISSTREAM key).", type: "toggle", group: "Vessel tracking" },
+  { key: "OPENSKY_CLIENT_ID", label: "OpenSky client ID", description: "Live flight tracking (departures + arrivals at cargo hubs). Free dev account at opensky-network.org.", type: "secret", group: "Flight tracking" },
+  { key: "OPENSKY_CLIENT_SECRET", label: "OpenSky client secret", description: "Pairs with OPENSKY_CLIENT_ID.", type: "secret", group: "Flight tracking" },
   { key: "SEVENTEENTRACK_API_KEY", label: "17track API key", description: "Air + ocean tracking aggregator. Optional fallback when carrier APIs aren't available.", type: "secret", group: "Tracking" },
   { key: "MAERSK_CONSUMER_KEY", label: "Maersk consumer key", description: "Maersk Track & Trace API. Apply at developer.maersk.com.", type: "secret", group: "Carrier APIs" },
   { key: "HAPAG_CLIENT_ID", label: "Hapag-Lloyd client ID", description: "Hapag-Lloyd Track API. Apply at api-portal.hlag.com.", type: "secret", group: "Carrier APIs" },

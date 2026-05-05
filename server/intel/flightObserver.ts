@@ -21,6 +21,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { listPorts } from "./ports";
+import { getSecretSync } from "../lib/appSettings";
 
 const STATS_FILE = path.resolve(process.cwd(), "data", "flight-route-stats.json");
 const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -81,9 +82,19 @@ class FlightObserver {
   private persistTimer: NodeJS.Timeout | null = null;
   private observationsTotal = 0;
   private started = false;
+  // Diagnostics — exposed via getStats so the UI can show *why* the observer
+  // is or isn't producing data (token errors, no flights returned, etc.)
+  private lastTickAt: string | null = null;
+  private lastTickResult: {
+    flightsSeen: number;
+    observations: number;
+    hubsOk: number;
+    hubsErr: number;
+  } | null = null;
+  private lastTokenError: string | null = null;
 
   isEnabled(): boolean {
-    return !!(process.env.OPENSKY_CLIENT_ID && process.env.OPENSKY_CLIENT_SECRET);
+    return !!(getSecretSync("OPENSKY_CLIENT_ID") && getSecretSync("OPENSKY_CLIENT_SECRET"));
   }
 
   async start(): Promise<void> {
@@ -115,8 +126,8 @@ class FlightObserver {
     if (this.cachedToken && this.cachedToken.expiresAt > Date.now() + 30_000) return this.cachedToken.token;
     const body = new URLSearchParams();
     body.set("grant_type", "client_credentials");
-    body.set("client_id", process.env.OPENSKY_CLIENT_ID!);
-    body.set("client_secret", process.env.OPENSKY_CLIENT_SECRET!);
+    body.set("client_id", getSecretSync("OPENSKY_CLIENT_ID")!);
+    body.set("client_secret", getSecretSync("OPENSKY_CLIENT_SECRET")!);
     const r = await fetch(AUTH_URL, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
     if (!r.ok) throw new Error(`OpenSky auth ${r.status}`);
     const j: any = await r.json();
@@ -126,10 +137,16 @@ class FlightObserver {
 
   private async tick(): Promise<void> {
     const token = await this.getToken().catch((err) => {
-      console.warn("[flightObserver] token fetch failed:", err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[flightObserver] token fetch failed:", msg);
+      this.lastTokenError = msg;
       return null;
     });
-    if (!token) return;
+    if (!token) {
+      this.lastTickAt = new Date().toISOString();
+      return;
+    }
+    this.lastTokenError = null;
     const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     const end = Math.floor(Date.now() / 1000);
     const begin = end - POLL_WINDOW_HOURS * 3600;
@@ -174,6 +191,13 @@ class FlightObserver {
       `(saw ${totalFlightsSeen} departures across ${hubsOk}/${hubs.length} hubs, ${hubsErr} errors). ` +
       `Total observed lifetime: ${this.observationsTotal}, routes learned: ${this.routeStats.size}`,
     );
+    this.lastTickAt = new Date().toISOString();
+    this.lastTickResult = {
+      flightsSeen: totalFlightsSeen,
+      observations: observationsThisTick,
+      hubsOk,
+      hubsErr,
+    };
     if (observationsThisTick > 0) this.schedulePersist();
   }
 
@@ -269,6 +293,9 @@ class FlightObserver {
     routesLearned: number;
     observationsTotal: number;
     topRoutes: Array<{ origin: string; destination: string; count: number; meanHours: number }>;
+    lastTickAt: string | null;
+    lastTickResult: { flightsSeen: number; observations: number; hubsOk: number; hubsErr: number } | null;
+    lastTokenError: string | null;
   } {
     const routes = new Map<string, { origin: string; destination: string; count: number; sum: number }>();
     this.routeStats.forEach((stat) => {
@@ -291,6 +318,9 @@ class FlightObserver {
       routesLearned: routes.size,
       observationsTotal: this.observationsTotal,
       topRoutes,
+      lastTickAt: this.lastTickAt,
+      lastTickResult: this.lastTickResult,
+      lastTokenError: this.lastTokenError,
     };
   }
 
