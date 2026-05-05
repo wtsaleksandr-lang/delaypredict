@@ -785,17 +785,27 @@ export default function ShipmentsList() {
         </Card>
       )}
 
-      {/* File-drop briefing extractor */}
-      <Card className="mb-4">
-        <CardContent className="p-4">
-          <div className="flex items-start gap-2 mb-2">
-            <Sparkles className="w-4 h-4 text-primary mt-0.5" />
+      {/* File-drop briefing extractor — hero-sized when no shipments yet */}
+      <Card
+        className={`mb-4 ${
+          totals.count === 0
+            ? "border-primary/30 bg-gradient-to-br from-primary/5 via-card to-card shadow-lg shadow-primary/5"
+            : ""
+        }`}
+      >
+        <CardContent className={totals.count === 0 ? "p-6 sm:p-8" : "p-4"}>
+          <div className="flex items-start gap-2 mb-3">
+            <Sparkles className={`${totals.count === 0 ? "w-5 h-5" : "w-4 h-4"} text-primary mt-0.5`} />
             <div>
-              <p className="text-sm font-semibold">Auto-extract from a booking briefing</p>
-              <p className="text-xs text-muted-foreground">
-                Drop a booking confirmation, BOL, packing list, screenshot, email — Claude reads them and creates a pre-filled shipment.
+              <p className={`${totals.count === 0 ? "text-base" : "text-sm"} font-semibold`}>
+                {totals.count === 0
+                  ? "Start with a booking briefing — we extract everything"
+                  : "Auto-extract from a booking briefing"}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5 max-w-2xl">
+                Drop a booking confirmation, BOL/AWB, packing list, email, or pasted screenshot. Claude pulls origin, destination, ETD/ETA, carrier, container/AWB, weight, and commodity — then computes risk and recommends the optimal insurance trigger.
                 {extractorStatus && !extractorStatus.configured && (
-                  <span className="text-amber-400 ml-1">⚠ ANTHROPIC_API_KEY not set — extractor disabled.</span>
+                  <span className="text-amber-400 block mt-1">⚠ Anthropic API key not set — open <strong>API keys & secrets</strong> in the footer to enable extraction.</span>
                 )}
               </p>
             </div>
@@ -810,18 +820,29 @@ export default function ShipmentsList() {
               if (e.dataTransfer.files) addFiles(e.dataTransfer.files);
             }}
             onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-md py-6 px-4 text-center cursor-pointer transition-colors ${
-              dragActive ? "border-primary bg-primary/10" : "border-border hover:border-primary/50 hover:bg-accent/30"
+            className={`border-2 border-dashed rounded-lg text-center cursor-pointer transition-all ${
+              totals.count === 0 ? "py-12 px-6" : "py-6 px-4"
+            } ${
+              dragActive
+                ? "border-primary bg-primary/10 scale-[1.01]"
+                : "border-border hover:border-primary/50 hover:bg-accent/30"
             }`}
             data-testid="drop-zone"
           >
-            <Upload className="w-6 h-6 mx-auto mb-2 text-muted-foreground" />
-            <p className="text-sm font-medium">
-              <strong>Drop files</strong>, click to browse, or press <kbd className="px-1.5 py-0.5 text-[10px] bg-muted rounded border border-border">Ctrl+V</kbd> to paste a screenshot
+            <Upload className={`${totals.count === 0 ? "w-10 h-10" : "w-6 h-6"} mx-auto mb-2 text-muted-foreground`} />
+            <p className={`${totals.count === 0 ? "text-base" : "text-sm"} font-medium`}>
+              <strong>Drop files</strong>, click to browse, or press{" "}
+              <kbd className="px-1.5 py-0.5 text-[10px] bg-muted rounded border border-border">Ctrl+V</kbd>{" "}
+              to paste a screenshot
             </p>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              PDF · PNG · JPG · WEBP · EML · MSG · HTML · TXT — multiple files describe ONE shipment (max 8, 20 MB each)
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              PDF · PNG · JPG · WEBP · EML · MSG · HTML · TXT — multiple files describe one shipment (max 8, 20 MB each)
             </p>
+            {totals.count === 0 && (
+              <p className="text-[11px] text-muted-foreground/80 mt-3 max-w-md mx-auto">
+                You can still type a shipment manually — POL/POD, ETD/ETA — but everything else can come from a single drop.
+              </p>
+            )}
             <input
               ref={fileInputRef}
               type="file"

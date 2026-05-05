@@ -21,10 +21,13 @@ import {
   fmt,
   riskColor,
   deriveRiskTier,
+  LIMIT_TIERS,
   type CalcInputs,
   type FreightMode,
 } from "@/lib/calculations";
 import { apiRequest } from "@/lib/queryClient";
+
+
 
 const DEFAULTS: CalcInputs = {
   mode: "ocean",
@@ -33,8 +36,8 @@ const DEFAULTS: CalcInputs = {
   etd: "",
   eta: "",
   transshipments: 0,
-  budget: 100,
-  riskTier: "Medium",
+  insuredLimit: 5000,
+  riskTier: null,
   originCongestion: "Med",
   transshipCongestion: "Med",
   destCongestion: "Med",
@@ -647,11 +650,20 @@ export default function ShipmentNew() {
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <CardContent className="px-4 pb-4 space-y-2 border-t border-border pt-3">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs text-muted-foreground">Premium Budget</Label>
-                    <span className="text-sm font-bold tabular-nums">{fmtUSD(inputs.budget)}</span>
-                  </div>
-                  <Slider min={20} max={2500} step={20} value={[inputs.budget]} onValueChange={([v]) => set("budget", v)} />
+                  <Label className="text-xs text-muted-foreground">Insured Limit</Label>
+                  <Select
+                    value={String(inputs.insuredLimit)}
+                    onValueChange={(v) => set("insuredLimit", Number(v))}
+                  >
+                    <SelectTrigger className="h-9 text-sm bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LIMIT_TIERS.map((t) => (
+                        <SelectItem key={t} value={String(t)}>{fmtUSD(t)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </CardContent>
               </CollapsibleContent>
             </Collapsible>
