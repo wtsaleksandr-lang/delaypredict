@@ -1,5 +1,6 @@
 import type { TrackingProvider, TrackingQuery, NormalizedTracking, TrackingMilestone } from "../types";
 import { ProviderError } from "../types";
+import { getSecretSync } from "../../lib/appSettings";
 
 /**
  * Hapag-Lloyd Track & Trace adapter (DCSA standard).
@@ -14,10 +15,8 @@ const BASE = "https://api.hlag.com/hlag/external/v2/events";
 
 export class HapagProvider implements TrackingProvider {
   name = "hapag";
-  constructor(
-    private readonly clientId = process.env.HAPAG_CLIENT_ID,
-    private readonly clientSecret = process.env.HAPAG_CLIENT_SECRET,
-  ) {}
+  private get clientId(): string | undefined { return getSecretSync("HAPAG_CLIENT_ID"); }
+  private get clientSecret(): string | undefined { return getSecretSync("HAPAG_CLIENT_SECRET"); }
 
   isConfigured() {
     return !!(this.clientId && this.clientSecret);

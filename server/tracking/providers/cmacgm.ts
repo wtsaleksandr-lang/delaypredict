@@ -1,5 +1,6 @@
 import type { TrackingProvider, TrackingQuery, NormalizedTracking, TrackingMilestone } from "../types";
 import { ProviderError } from "../types";
+import { getSecretSync } from "../../lib/appSettings";
 
 /**
  * CMA CGM Track & Trace adapter.
@@ -17,10 +18,8 @@ export class CmaCgmProvider implements TrackingProvider {
   name = "cmacgm";
   private cachedToken?: { token: string; expiresAt: number };
 
-  constructor(
-    private readonly clientId = process.env.CMACGM_CLIENT_ID,
-    private readonly clientSecret = process.env.CMACGM_CLIENT_SECRET,
-  ) {}
+  private get clientId(): string | undefined { return getSecretSync("CMACGM_CLIENT_ID"); }
+  private get clientSecret(): string | undefined { return getSecretSync("CMACGM_CLIENT_SECRET"); }
 
   isConfigured() {
     return !!(this.clientId && this.clientSecret);

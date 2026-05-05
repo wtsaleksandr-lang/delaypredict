@@ -1,5 +1,6 @@
 import type { TrackingProvider, TrackingQuery, NormalizedTracking, TrackingMilestone } from "../types";
 import { ProviderError } from "../types";
+import { getSecretSync } from "../../lib/appSettings";
 
 /**
  * Maersk Track & Trace adapter.
@@ -16,7 +17,9 @@ const BASE = "https://api.maersk.com/track-and-trace-private/events";
 
 export class MaerskProvider implements TrackingProvider {
   name = "maersk";
-  constructor(private readonly key = process.env.MAERSK_CONSUMER_KEY) {}
+  private get key(): string | undefined {
+    return getSecretSync("MAERSK_CONSUMER_KEY");
+  }
 
   isConfigured() {
     return !!this.key;

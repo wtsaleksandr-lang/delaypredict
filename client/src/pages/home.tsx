@@ -23,6 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChevronDown, ChevronUp, Info, Ship, Plane, TrendingUp, AlertTriangle, ShieldCheck, Minus, FlaskConical, HelpCircle } from "lucide-react";
+import { HowItWorksCard } from "@/components/HowItWorksCard";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   calculate,
@@ -312,6 +313,7 @@ export default function Home() {
   return (
     <div>
       <div className="max-w-6xl mx-auto px-4 py-6 lg:py-8">
+        <HowItWorksCard />
         <div className="flex flex-col lg:flex-row gap-6">
 
           {/* ── LEFT PANEL: Inputs ── */}

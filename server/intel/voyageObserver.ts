@@ -30,6 +30,7 @@ import path from "path";
 import { aisStream } from "../tracking/vessels/aisstream";
 import type { VesselPosition } from "../tracking/vessels/aisstream";
 import { resolvePort, haversineKm, listPorts, type PortEntry } from "./ports";
+import { getSecretSync } from "../lib/appSettings";
 
 const STATE_FILE = path.resolve(process.cwd(), "data", "voyage-vessel-state.json");
 const LANE_STATS_FILE = path.resolve(process.cwd(), "data", "voyage-lane-stats.json");
@@ -87,7 +88,7 @@ class VoyageObserver {
   private observationsTotal = 0;
 
   isEnabled(): boolean {
-    return process.env.ENABLE_VOYAGE_OBSERVER === "true" && !!process.env.AISSTREAM_API_KEY;
+    return getSecretSync("ENABLE_VOYAGE_OBSERVER") === "true" && !!getSecretSync("AISSTREAM_API_KEY");
   }
 
   async start(): Promise<void> {

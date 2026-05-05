@@ -11,6 +11,7 @@ import { aisStream } from "./tracking/vessels/aisstream";
 import { startPredictionJobs } from "./jobs/predictionJobs";
 import { voyageObserver } from "./intel/voyageObserver";
 import { flightObserver } from "./intel/flightObserver";
+import { preloadSettings } from "./lib/appSettings";
 
 const app = express();
 const httpServer = createServer(app);
@@ -114,6 +115,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Preload app_settings.json so getSecretSync() works for any module that reads
+  // a key during boot (carrier providers, AIS observer, etc.).
+  await preloadSettings();
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
