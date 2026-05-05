@@ -13,6 +13,7 @@
 
 import { promises as fs } from "fs";
 import path from "path";
+import { getSecret, getSecretSync } from "../lib/appSettings";
 import { readIntelCache } from "./index";
 
 const MODEL = "claude-haiku-4-5";
@@ -84,7 +85,7 @@ Respond ONLY with a strict JSON object, no prose before or after:
 Rationale must be specific (mention the actual driver, e.g. "Red Sea rerouting via Cape of Good Hope" not just "geopolitical tension").`;
 
 async function callClaude(userContent: string): Promise<LlmRouteRiskResult | null> {
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = await getSecret("ANTHROPIC_API_KEY");
   if (!key) return null;
 
   const body = {
@@ -130,7 +131,7 @@ async function callClaude(userContent: string): Promise<LlmRouteRiskResult | nul
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export function isLlmConfigured(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY;
+  return !!getSecretSync("ANTHROPIC_API_KEY");
 }
 
 export async function detectLlmRouteRisk(opts: {

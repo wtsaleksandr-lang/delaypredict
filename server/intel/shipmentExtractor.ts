@@ -10,6 +10,7 @@
  */
 
 import { promises as fs } from "fs";
+import { getSecret, getSecretSync } from "../lib/appSettings";
 
 const MODEL = "claude-haiku-4-5";
 const ENDPOINT = "https://api.anthropic.com/v1/messages";
@@ -80,11 +81,11 @@ Rules:
 - Confidence: 1.0 = all fields verified, 0.5 = some inference, 0.2 = mostly guessed.`;
 
 export function isExtractorConfigured(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY;
+  return !!getSecretSync("ANTHROPIC_API_KEY");
 }
 
 export async function extractFromFiles(files: UploadedFile[]): Promise<ExtractedShipment> {
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = await getSecret("ANTHROPIC_API_KEY");
   if (!key) throw new Error("ANTHROPIC_API_KEY not set — needed for shipment extraction");
   if (files.length === 0) throw new Error("No files provided");
 

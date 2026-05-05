@@ -13,6 +13,7 @@
  */
 
 import WebSocket from "ws";
+import { getSecretSync } from "../../lib/appSettings";
 import { promises as fs } from "fs";
 import path from "path";
 import { storage } from "../../storage";
@@ -81,7 +82,7 @@ class AisStreamSubscriber {
   private handlers: UpdateHandler[] = [];
 
   isConfigured(): boolean {
-    return !!process.env.AISSTREAM_API_KEY;
+    return !!getSecretSync("AISSTREAM_API_KEY");
   }
 
   onUpdate(handler: UpdateHandler): void {
@@ -173,7 +174,7 @@ class AisStreamSubscriber {
   }
 
   private isGlobalMode(): boolean {
-    return process.env.ENABLE_VOYAGE_OBSERVER === "true";
+    return getSecretSync("ENABLE_VOYAGE_OBSERVER") === "true";
   }
 
   private async reload(): Promise<void> {
@@ -207,7 +208,7 @@ class AisStreamSubscriber {
 
   private connect(): void {
     if (this.closing) return;
-    const key = process.env.AISSTREAM_API_KEY!;
+    const key = getSecretSync("AISSTREAM_API_KEY")!;
     const ws = new WebSocket(ENDPOINT);
     this.ws = ws;
     const globalMode = this.isGlobalMode();

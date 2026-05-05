@@ -10,6 +10,7 @@ import Calculator_ from "@/pages/home";
 import ShipmentsList from "@/pages/shipments-list";
 import ShipmentNew from "@/pages/shipment-new";
 import ShipmentReport from "@/pages/shipment-report";
+import { SecretsButton } from "@/components/SecretsModal";
 
 function NavLink({ href, icon: Icon, children }: { href: string; icon: any; children: React.ReactNode }) {
   const [location] = useLocation();
@@ -29,7 +30,7 @@ function NavLink({ href, icon: Icon, children }: { href: string; icon: any; chil
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background flex flex-col">
       <header className="border-b border-border bg-card sticky top-0 z-50 print:hidden">
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3">
           <Link href="/shipments" className="flex items-center gap-2">
@@ -44,7 +45,13 @@ function Shell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
       </header>
-      {children}
+      <div className="flex-1">{children}</div>
+      <footer className="border-t border-border bg-card mt-auto print:hidden">
+        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>DelayPredict</span>
+          <SecretsButton />
+        </div>
+      </footer>
     </div>
   );
 }

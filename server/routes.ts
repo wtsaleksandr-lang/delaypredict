@@ -16,6 +16,7 @@ import { prefillShipment } from "./tracking/prefill";
 import { refreshAllPredictions, computePredictionAccuracy, recomputePredictionForShipment } from "./intel/predictor";
 import { voyageObserver } from "./intel/voyageObserver";
 import { flightObserver } from "./intel/flightObserver";
+import { listSettingsForUI, setSetting } from "./lib/appSettings";
 
 function carrierNameToScac(name: string): string | null {
   const n = name.toLowerCase();
@@ -174,6 +175,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/predictions/accuracy", async (_req, res, next) => {
     try {
       res.json(await computePredictionAccuracy());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── Settings / API keys ──────────────────────────────────────────────
+  // GET returns the schema + masked previews; PUT writes a single key
+  // (value: null clears it).
+  app.get("/api/settings", async (_req, res, next) => {
+    try {
+      res.json(await listSettingsForUI());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.put("/api/settings", async (req, res, next) => {
+    try {
+      const { key, value } = req.body ?? {};
+      if (typeof key !== "string" || !key) {
+        return res.status(400).json({ message: "key (string) required" });
+      }
+      if (value !== null && typeof value !== "string") {
+        return res.status(400).json({ message: "value must be string or null" });
+      }
+      await setSetting(key, value);
+      res.json(await listSettingsForUI());
     } catch (err) {
       next(err);
     }

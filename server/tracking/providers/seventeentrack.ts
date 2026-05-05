@@ -1,5 +1,6 @@
 import type { TrackingProvider, TrackingQuery, NormalizedTracking, TrackingMilestone } from "../types";
 import { ProviderError } from "../types";
+import { getSecretSync } from "../../lib/appSettings";
 
 /**
  * 17TRACK adapter — universal aggregator covering 3200+ carriers,
@@ -17,7 +18,7 @@ const BASE = "https://api.17track.net/track/v2";
 
 export class SeventeenTrackProvider implements TrackingProvider {
   name = "17track";
-  constructor(private readonly token: string | undefined = process.env.SEVENTEENTRACK_API_KEY) {}
+  private get token(): string | undefined { return getSecretSync("SEVENTEENTRACK_API_KEY"); }
 
   isConfigured() {
     return !!this.token;
