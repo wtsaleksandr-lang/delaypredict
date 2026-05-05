@@ -27,6 +27,8 @@ import { HowItWorksCard } from "@/components/HowItWorksCard";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   calculate,
+  payoutSchedule,
+  LIMIT_TIERS,
   type CalcInputs,
   type TriggerResult,
   type RiskTier,
@@ -47,8 +49,9 @@ const DEFAULT_INPUTS: CalcInputs = {
   etd: "",
   eta: "",
   transshipments: 0,
-  budget: 100,
-  riskTier: "High",
+  insuredLimit: 5000,
+  // null = auto-derive risk tier from the computed score
+  riskTier: null,
   originCongestion: "Med",
   transshipCongestion: "Med",
   destCongestion: "Med",
@@ -121,10 +124,12 @@ function TriggerCard({
   result,
   isBest,
   unit,
+  mode,
 }: {
   result: TriggerResult;
   isBest: boolean;
   unit: "day" | "hour";
+  mode: "ocean" | "air";
 }) {
   const Icon =
     result.recommendation === "INSURE"
@@ -228,6 +233,25 @@ function TriggerCard({
           {fmt(result.roi, 2)}×
         </span>
       </div>
+
+      {/* Payout schedule preview — what you'd actually receive at each delay step */}
+      <details className="text-[11px] text-muted-foreground pt-1 border-t border-border/60">
+        <summary className="cursor-pointer hover:text-foreground select-none">
+          Payout schedule (50% on trigger, +5% per period)
+        </summary>
+        <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 tabular-nums">
+          {payoutSchedule({ mode, trigger: result.trigger, insuredLimit: result.insuredLimit })
+            .filter((_, i) => i % 2 === 0 || i === 10)
+            .map((row) => (
+              <div key={row.delayLabel} className="flex justify-between">
+                <span>{row.delayLabel}</span>
+                <span className="font-semibold text-foreground">
+                  {fmtUSD(row.amount)} <span className="text-muted-foreground">({(row.pct * 100).toFixed(0)}%)</span>
+                </span>
+              </div>
+            ))}
+        </div>
+      </details>
     </div>
   );
 }
@@ -397,7 +421,7 @@ export default function Home() {
               </CardContent>
             </Card>
 
-            {/* Budget & Tier */}
+            {/* Insured limit & risk tier */}
             <Card className="border-card-border">
               <CardHeader className="pb-3 pt-4 px-4">
                 <CardTitle className="text-sm font-semibold text-foreground">
@@ -405,53 +429,53 @@ export default function Home() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-4 pb-4 space-y-4">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                      Budget (Premium)
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Info className="w-3 h-3 text-muted-foreground cursor-help" />
-                        </TooltipTrigger>
-                        <TooltipContent side="right" className="max-w-48 text-xs">
-                          This is the maximum premium you want to pay. The insured limit is derived from this.
-                        </TooltipContent>
-                      </Tooltip>
-                    </Label>
-                    <span
-                      className="text-sm font-bold text-foreground tabular-nums"
-                      data-testid="text-budget"
-                    >
-                      {fmtUSD(inputs.budget)}
-                    </span>
-                  </div>
-                  <Slider
-                    data-testid="slider-budget"
-                    min={20}
-                    max={300}
-                    step={5}
-                    value={[inputs.budget]}
-                    onValueChange={([v]) => set("budget", v)}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>$20</span>
-                    <span>$300</span>
-                  </div>
-                  {result.triggers.some((t) => t.premium > inputs.budget) && (
-                    <p className="text-xs text-amber-500 leading-snug" data-testid="text-budget-warning">
-                      Minimum coverage requires a premium above the selected budget.
-                    </p>
-                  )}
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    Insured Limit (USD)
+                    <Help text="The cargo value you want covered. Per WCA: $1,000–$250,000. Premium = limit × rate%." />
+                  </Label>
+                  <Select
+                    value={String(inputs.insuredLimit)}
+                    onValueChange={(v) => set("insuredLimit", Number(v))}
+                  >
+                    <SelectTrigger data-testid="select-insured-limit" className="h-9 text-sm bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LIMIT_TIERS.map((t) => (
+                        <SelectItem key={t} value={String(t)}>
+                          {fmtUSD(t)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
-                <SelectGroup
-                  label="Risk Tier"
-                  value={inputs.riskTier}
-                  options={riskTierOptions}
-                  onValueChange={(v) => set("riskTier", v)}
-                  testId="select-risk-tier"
-                />
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      Risk Tier
+                      <Help text="Auto-derived from the risk score (Low <33, Medium 33–66, High >66). Override only if you have ground truth that disagrees with the model." />
+                    </Label>
+                    <Badge variant={inputs.riskTier == null ? "secondary" : "outline"} className="text-[10px]">
+                      {inputs.riskTier == null ? `Auto · ${result.effectiveRiskTier}` : "Override"}
+                    </Badge>
+                  </div>
+                  <Select
+                    value={inputs.riskTier ?? "auto"}
+                    onValueChange={(v) => set("riskTier", v === "auto" ? null : (v as RiskTier))}
+                  >
+                    <SelectTrigger data-testid="select-risk-tier" className="h-9 text-sm bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto (use score)</SelectItem>
+                      {riskTierOptions.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardContent>
             </Card>
 
@@ -651,13 +675,14 @@ export default function Home() {
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
                 Trigger Comparison
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {result.triggers.map((t) => (
                   <TriggerCard
                     key={t.trigger}
                     result={t}
                     isBest={t.trigger === result.best.trigger}
                     unit={result.triggerUnit}
+                    mode={inputs.mode}
                   />
                 ))}
               </div>

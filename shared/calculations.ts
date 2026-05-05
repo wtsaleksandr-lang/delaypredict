@@ -16,8 +16,13 @@ export interface CalcInputs {
   destinationPort: string;
   etd: string;
   eta: string;
-  budget: number;
-  riskTier: RiskTier;
+  /** Insured limit (USD) — must be one of LIMIT_TIERS. */
+  insuredLimit: number;
+  /**
+   * Risk tier override. When omitted/null, the calculator auto-derives the
+   * tier from the computed risk score (Low <33, Medium 33–66, High >66).
+   */
+  riskTier?: RiskTier | null;
 
   // Ocean factors
   transshipments: number;
@@ -58,6 +63,10 @@ export interface CalcResult {
   triggers: TriggerResult[];
   best: TriggerResult;
   triggerUnit: "day" | "hour"; // air uses hours
+  /** Risk tier actually used for the rate lookup (auto-derived if not overridden). */
+  effectiveRiskTier: RiskTier;
+  /** Whether the tier was auto-derived from the score (true) or user-overridden (false). */
+  riskTierAuto: boolean;
 }
 
 export interface PnL {
@@ -79,14 +88,22 @@ const OCEAN_RATES: Record<6 | 8 | 10, Record<RiskTier, number>> = {
 const OCEAN_TRIGGERS: (6 | 8 | 10)[] = [6, 8, 10];
 const OCEAN_PROB_MULT: Record<6 | 8 | 10, number> = { 6: 1.0, 8: 0.78, 10: 0.62 };
 
-// Air uses tighter triggers (hours) and higher rates (more volatile, smaller payouts)
-const AIR_RATES: Record<12 | 24 | 48, Record<RiskTier, number>> = {
-  48: { Low: 0.0090, Medium: 0.0110, High: 0.0135 },
-  24: { Low: 0.0150, Medium: 0.0185, High: 0.0225 },
-  12: { Low: 0.0260, Medium: 0.0310, High: 0.0380 },
+// Air uses tighter triggers (hours) per Otonomi/WCA: 3 / 6 / 12 / 24 hr
+// Rates per $100 of insured limit, by lane risk tier.
+const AIR_RATES: Record<3 | 6 | 12 | 24, Record<RiskTier, number>> = {
+  24: { Low: 0.0075, Medium: 0.0083, High: 0.0093 },
+  12: { Low: 0.0111, Medium: 0.0125, High: 0.0140 },
+  6: { Low: 0.0146, Medium: 0.0164, High: 0.0184 },
+  3: { Low: 0.0264, Medium: 0.0297, High: 0.0334 },
 };
-const AIR_TRIGGERS: (12 | 24 | 48)[] = [12, 24, 48];
-const AIR_PROB_MULT: Record<12 | 24 | 48, number> = { 12: 1.0, 24: 0.72, 48: 0.45 };
+const AIR_TRIGGERS: (3 | 6 | 12 | 24)[] = [3, 6, 12, 24];
+// P(claim | shipment) multiplier — tighter triggers fire more often.
+const AIR_PROB_MULT: Record<3 | 6 | 12 | 24, number> = { 3: 1.0, 6: 0.82, 12: 0.62, 24: 0.42 };
+
+// Pre-defined insured-limit tiers ($1k–$250k as per WCA).
+export const LIMIT_TIERS = [
+  1000, 5000, 10000, 15000, 20000, 25000, 50000, 75000, 100000, 150000, 200000, 250000,
+] as const;
 
 // ── Risk score ────────────────────────────────────────────────────────────────
 function congestionScore(c: CongestionLevel): number {
@@ -143,6 +160,13 @@ function riskScoreToBaseProbability(score: number): number {
 }
 
 // ── Per-trigger result ────────────────────────────────────────────────────────
+//
+// Payout schedule (per WCA/Otonomi spec):
+//   - 50% on the trigger date
+//   - +5% per additional "period" of delay past the trigger date, capped at 100%
+//   - Ocean: 1 period = 1 day (regardless of trigger choice)
+//   - Air:   1 period = the chosen trigger value (3/6/12/24 hours)
+//
 function computeTriggerResult(
   triggerVal: number,
   rate: number,
@@ -150,16 +174,19 @@ function computeTriggerResult(
   inputs: CalcInputs,
   baseProbability: number,
   expectedDelay: number,
+  isAir: boolean,
 ): TriggerResult {
-  const rawLimit = inputs.budget / rate;
-  const insuredLimit = Math.min(250000, Math.max(1000, rawLimit));
+  const insuredLimit = inputs.insuredLimit;
   const premium = insuredLimit * rate;
 
   const rawProb = baseProbability * probMultiplier;
   const triggerProbability = Math.min(0.85, rawProb);
 
-  const extraUnits = Math.max(0, expectedDelay - triggerVal);
-  const expectedPayoutPct = Math.min(1.0, 0.5 + 0.05 * extraUnits);
+  // Period length depends on mode: ocean = 1 day, air = trigger value (in hours).
+  const periodLen = isAir ? triggerVal : 1;
+  const extraPastTrigger = Math.max(0, expectedDelay - triggerVal);
+  const extraPeriods = Math.floor(extraPastTrigger / periodLen);
+  const expectedPayoutPct = Math.min(1.0, 0.5 + 0.05 * extraPeriods);
 
   const expectedPayout = triggerProbability * insuredLimit * expectedPayoutPct;
   const ev = expectedPayout - premium;
@@ -206,6 +233,9 @@ export function calculate(inputs: CalcInputs): CalcResult {
     : computeOceanRiskScore(inputs, transitDays);
   const baseDelayProbability = riskScoreToBaseProbability(riskScore);
 
+  // Auto-derive risk tier from the computed score unless the caller explicitly overrode it.
+  const effectiveTier: RiskTier = inputs.riskTier ?? deriveRiskTier(riskScore);
+
   // Expected delay: ocean → 0..12 days, air → 0..18 hours (then converted)
   const expectedDelayDays = isAir
     ? (riskScore / 100) * 0.75 // 0..18 hours expressed in days for storage
@@ -218,22 +248,24 @@ export function calculate(inputs: CalcInputs): CalcResult {
     triggerResults = AIR_TRIGGERS.map((t) =>
       computeTriggerResult(
         t,
-        AIR_RATES[t][inputs.riskTier],
+        AIR_RATES[t][effectiveTier],
         AIR_PROB_MULT[t],
         inputs,
         baseDelayProbability,
         expectedDelayHours,
+        true,
       ),
     );
   } else {
     triggerResults = OCEAN_TRIGGERS.map((t) =>
       computeTriggerResult(
         t,
-        OCEAN_RATES[t][inputs.riskTier],
+        OCEAN_RATES[t][effectiveTier],
         OCEAN_PROB_MULT[t],
         inputs,
         baseDelayProbability,
         expectedDelayDays,
+        false,
       ),
     );
   }
@@ -249,7 +281,38 @@ export function calculate(inputs: CalcInputs): CalcResult {
     triggers: triggerResults,
     best,
     triggerUnit: isAir ? "hour" : "day",
+    effectiveRiskTier: effectiveTier,
+    riskTierAuto: inputs.riskTier == null,
   };
+}
+
+/**
+ * Build the deterministic payout schedule for a given trigger.
+ * Returns rows from "0 periods past trigger" up to the 100% cap.
+ * Mirrors the WCA tables in the Otonomi product spec exactly.
+ */
+export function payoutSchedule(opts: {
+  mode: FreightMode;
+  trigger: number;
+  insuredLimit: number;
+}): Array<{ delayLabel: string; pct: number; amount: number }> {
+  const isAir = opts.mode === "air";
+  const periods = 10; // 0..10 → 50%..100%
+  const out: Array<{ delayLabel: string; pct: number; amount: number }> = [];
+  for (let n = 0; n <= periods; n++) {
+    const pct = Math.min(1, 0.5 + 0.05 * n);
+    const periodLen = isAir ? opts.trigger : 1;
+    const delayUnits = n * periodLen;
+    const label = isAir
+      ? `+${delayUnits}h past trigger`
+      : `+${delayUnits}d past trigger`;
+    out.push({
+      delayLabel: n === 0 ? "On trigger" : label,
+      pct,
+      amount: Math.round(opts.insuredLimit * pct),
+    });
+  }
+  return out;
 }
 
 // ── P&L ──────────────────────────────────────────────────────────────────────
