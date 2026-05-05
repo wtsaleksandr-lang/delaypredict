@@ -130,7 +130,7 @@ interface PredictionSource { source: string; etaIso: string; weight: number; not
 
 function sourceLabel(src: string): string {
   switch (src) {
-    case "carrier": return "Carrier ETA";
+    case "carrier": return "Claimed ETA";
     case "ais_vessel": return "Vessel AIS";
     case "air_flight": return "OpenSky";
     case "heuristic": return "Risk model";
@@ -537,6 +537,9 @@ export default function ShipmentsList() {
   const { data: flightObs } = useQuery<{
     enabled: boolean; hubsPolled: number; routesLearned: number; observationsTotal: number;
     topRoutes: Array<{ origin: string; destination: string; count: number; meanHours: number }>;
+    lastTickAt: string | null;
+    lastTickResult: { flightsSeen: number; observations: number; hubsOk: number; hubsErr: number } | null;
+    lastTokenError: string | null;
   }>({ queryKey: ["/api/flight-observer"], refetchInterval: 60_000 });
 
   const [globalSearch, setGlobalSearch] = useState("");
@@ -755,9 +758,23 @@ export default function ShipmentsList() {
               {observer.topLanes.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 max-w-[600px]">
                   {observer.topLanes.slice(0, 5).map((l, i) => (
-                    <span key={i} className="text-[10px] bg-muted/50 border border-border rounded px-1.5 py-0.5 font-mono">
-                      {l.origin}→{l.destination}: {l.meanDays}d ({l.count})
-                    </span>
+                    <Tooltip key={i}>
+                      <TooltipTrigger asChild>
+                        <span className="text-[10px] bg-muted/50 border border-border rounded px-1.5 py-0.5 font-mono cursor-help hover:bg-muted">
+                          {l.origin}→{l.destination}: {l.meanDays}d ({l.count})
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-xs text-xs leading-relaxed">
+                        <div className="space-y-1">
+                          <p className="font-semibold">{l.origin} → {l.destination}</p>
+                          <p>Average observed transit: <strong>{l.meanDays} days</strong></p>
+                          <p>Sample size: <strong>{l.count}</strong> completed voyages observed via global AIS</p>
+                          <p className="text-muted-foreground/80 pt-1 border-t border-border/50">
+                            This is the median real-world transit time we've seen on this lane — used to calibrate predictions for shipments going the same route.
+                          </p>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
                   ))}
                 </div>
               )}
@@ -778,8 +795,46 @@ export default function ShipmentsList() {
                     <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${flightObs.enabled ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-zinc-500/20 text-zinc-400 border-zinc-500/40"}`}>{flightObs.enabled ? "on" : "off"}</span>
                   </p>
                   <p className="text-xs text-muted-foreground mt-0.5">Hubs: {flightObs.hubsPolled} · Routes: {flightObs.routesLearned} · Flights: {flightObs.observationsTotal}</p>
+                  {/* Diagnostics — surface why the observer is or isn't learning */}
+                  {flightObs.enabled && flightObs.observationsTotal === 0 && (
+                    <p className="text-[11px] text-amber-400 mt-1">
+                      {flightObs.lastTokenError
+                        ? `OpenSky auth: ${flightObs.lastTokenError}`
+                        : flightObs.lastTickAt == null
+                        ? "First poll runs ~2 min after server boot — check back shortly."
+                        : `Last poll ${new Date(flightObs.lastTickAt).toLocaleTimeString()} — ${flightObs.lastTickResult?.flightsSeen ?? 0} flights seen, ${flightObs.lastTickResult?.observations ?? 0} hub-to-hub matches. (Cargo flights between our 56 hubs are sparse on hourly windows.)`}
+                    </p>
+                  )}
+                  {!flightObs.enabled && (
+                    <p className="text-[11px] text-amber-400 mt-1">
+                      Set OPENSKY_CLIENT_ID + OPENSKY_CLIENT_SECRET in <strong>API keys & secrets</strong> (footer) to enable flight learning.
+                    </p>
+                  )}
                 </div>
               </div>
+              {flightObs.topRoutes && flightObs.topRoutes.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 max-w-[600px]">
+                  {flightObs.topRoutes.slice(0, 5).map((r, i) => (
+                    <Tooltip key={i}>
+                      <TooltipTrigger asChild>
+                        <span className="text-[10px] bg-muted/50 border border-border rounded px-1.5 py-0.5 font-mono cursor-help hover:bg-muted">
+                          {r.origin}→{r.destination}: {r.meanHours}h ({r.count})
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-xs text-xs leading-relaxed">
+                        <div className="space-y-1">
+                          <p className="font-semibold">{r.origin} → {r.destination}</p>
+                          <p>Average observed flight time: <strong>{r.meanHours} hours</strong></p>
+                          <p>Sample size: <strong>{r.count}</strong> completed flights via OpenSky</p>
+                          <p className="text-muted-foreground/80 pt-1 border-t border-border/50">
+                            Used to calibrate air predictions for the same hub pair.
+                          </p>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  ))}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

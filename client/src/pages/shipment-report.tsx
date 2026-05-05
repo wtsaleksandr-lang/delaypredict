@@ -21,6 +21,7 @@ import { apiRequest } from "@/lib/queryClient";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LabelList,
 } from "recharts";
+import { TimeToTriggerCard } from "@/components/TimeToTriggerCard";
 
 function n(v: any): number {
   if (v == null) return 0;
@@ -224,6 +225,7 @@ export default function ShipmentReport({ id }: Props) {
       )}
 
       <PredictedArrivalCard shipment={shipment} />
+      <TimeToTriggerCard shipment={shipment} />
       <InsuranceRecommendationCard shipment={shipment} />
       {shipment.actual_arrival && <ActualArrivalCard shipment={shipment} />}
 
