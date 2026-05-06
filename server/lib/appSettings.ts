@@ -1,19 +1,18 @@
 /**
- * App settings store — read/write `data/app-settings.json`.
+ * App settings store — Postgres-backed (Neon).
  *
  * Used to persist API keys and feature toggles without touching the host's
- * environment. `getSecret(name)` checks settings first, then falls back to
- * `process.env[name]` so existing deploys keep working.
+ * environment. `getSecret(name)` checks the in-memory cache (which mirrors
+ * the `app_settings` table) first, then falls back to `process.env[name]`
+ * so existing env-based deploys keep working.
  *
- * Values are stored in plain JSON on disk — fine for a personal/internal tool
- * but DO NOT commit `data/app-settings.json` to git (already gitignored under
- * `data/`). For a multi-user prod, swap this for a real secrets manager.
+ * Why Postgres: the previous JSON-file backing store lived under `data/`
+ * which was wiped on every Replit redeploy.
  */
 
-import { promises as fs } from "fs";
-import path from "path";
-
-const FILE = path.resolve(process.cwd(), "data", "app-settings.json");
+import { eq } from "drizzle-orm";
+import { appSettings } from "@shared/schema";
+import { getDb } from "../db";
 
 const SECRET_KEYS = new Set([
   "ANTHROPIC_API_KEY",
@@ -53,12 +52,12 @@ let loadPromise: Promise<void> | null = null;
 
 async function load(): Promise<void> {
   try {
-    const raw = await fs.readFile(FILE, "utf-8");
-    cache = JSON.parse(raw);
+    const rows = await getDb().select().from(appSettings);
+    const map: Record<string, string> = {};
+    for (const r of rows) map[r.key] = r.value;
+    cache = map;
   } catch (err: any) {
-    if (err.code !== "ENOENT") {
-      console.warn("[appSettings] read failed:", err.message);
-    }
+    console.warn("[appSettings] DB read failed:", err?.message ?? err);
     cache = {};
   }
 }
@@ -67,13 +66,6 @@ async function ensureLoaded(): Promise<void> {
   if (cache !== null) return;
   if (!loadPromise) loadPromise = load();
   await loadPromise;
-}
-
-async function persist(): Promise<void> {
-  await fs.mkdir(path.dirname(FILE), { recursive: true });
-  const tmp = FILE + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(cache ?? {}, null, 2), "utf-8");
-  await fs.rename(tmp, FILE);
 }
 
 export function isSecret(key: string): boolean {
@@ -118,12 +110,21 @@ export async function preloadSettings(): Promise<void> {
 export async function setSetting(key: string, value: string | null): Promise<void> {
   await ensureLoaded();
   if (!cache) cache = {};
+  const db = getDb();
   if (value == null || value === "") {
     delete cache[key];
+    await db.delete(appSettings).where(eq(appSettings.key, key));
   } else {
     cache[key] = value;
+    // Upsert: insert or update the value, refresh updated_at
+    await db
+      .insert(appSettings)
+      .values({ key, value })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: { value, updated_at: new Date() },
+      });
   }
-  await persist();
 }
 
 export async function listSettingsForUI(): Promise<{

@@ -1,26 +1,25 @@
 /**
  * Prediction history recorder + bias-correction lookup.
  *
- * Every time recomputePredictionForShipment finishes, we append a snapshot to
- * data/prediction-history.jsonl. When a shipment delivers, the actual_arrival
- * is already on the shipment record; pairing the two lets us:
+ * Every time recomputePredictionForShipment finishes, we append a snapshot
+ * to the prediction_history Postgres table. When a shipment delivers, its
+ * actual_arrival is on the shipment record; pairing the two lets us:
  *
  *   1. Score predictions made AT a useful moment (e.g. when you'd quote a
- *      customer, ~7 days before ETA), not the prediction made 5 minutes before
- *      arrival, which trivially has near-zero error.
- *   2. Compute per-lane bias (e.g. "Shanghai-LA carrier ETA is +1.7d optimistic
- *      on average"). The predictor then subtracts that bias when forming new
- *      predictions on the same lane.
+ *      customer, ~5 days before ETA), not the prediction made 5 minutes
+ *      before arrival, which trivially has near-zero error.
+ *   2. Compute per-lane bias (e.g. "Shanghai-LA Claimed ETA is +1.7d
+ *      optimistic on average"). The predictor then corrects new
+ *      predictions on the same lane using that bias.
  *
- * Storage is append-only JSONL — same pattern as voyage-observations.jsonl.
- * The in-memory bias cache is rebuilt from the file at boot and refreshed
- * whenever a new entry is paired with an actual arrival.
+ * Storage is the prediction_history table on Neon Postgres (was a JSONL
+ * file under data/ — wiped on every Replit redeploy). The in-memory bias
+ * cache is rebuilt from the table at boot and refreshed whenever a new
+ * entry is paired with an actual arrival.
  */
 
-import { promises as fs } from "fs";
-import path from "path";
-
-const HISTORY_FILE = path.resolve(process.cwd(), "data", "prediction-history.jsonl");
+import { predictionHistory } from "@shared/schema";
+import { getDb } from "../db";
 
 export interface PredictionSnapshot {
   shipment_id: string;
@@ -38,10 +37,21 @@ export interface PredictionSnapshot {
 
 export async function recordPrediction(snap: PredictionSnapshot): Promise<void> {
   try {
-    await fs.mkdir(path.dirname(HISTORY_FILE), { recursive: true });
-    await fs.appendFile(HISTORY_FILE, JSON.stringify(snap) + "\n", "utf-8");
+    await getDb().insert(predictionHistory).values({
+      shipment_id: snap.shipment_id,
+      predicted_at: new Date(snap.predicted_at),
+      predicted_arrival: new Date(snap.predicted_arrival),
+      prediction_confidence: String(snap.prediction_confidence),
+      origin: snap.origin,
+      destination: snap.destination,
+      mode: snap.mode,
+      carrier_scac: snap.carrier_scac,
+      eta: snap.eta,
+      etd: snap.etd,
+      sources: snap.sources,
+    });
   } catch (err) {
-    console.warn("[predictionHistory] append failed:", err instanceof Error ? err.message : err);
+    console.warn("[predictionHistory] insert failed:", err instanceof Error ? err.message : err);
   }
 }
 
@@ -85,25 +95,31 @@ export interface ScoredPrediction extends PredictionSnapshot {
  * actual_arrival. Falls back to earliest available if no such snapshot exists.
  */
 export async function rebuildBiasCache(deliveredShipments: Array<{ id: string; origin: string | null; destination: string | null; mode: string; actual_arrival: any }>): Promise<{ scored: ScoredPrediction[] }> {
-  let raw = "";
+  let rows: Array<typeof predictionHistory.$inferSelect> = [];
   try {
-    raw = await fs.readFile(HISTORY_FILE, "utf-8");
-  } catch {
+    rows = await getDb().select().from(predictionHistory);
+  } catch (err) {
+    console.warn("[predictionHistory] DB read failed:", err instanceof Error ? err.message : err);
     biasCache.clear();
     return { scored: [] };
   }
 
-  const all: PredictionSnapshot[] = raw
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      try { return JSON.parse(line) as PredictionSnapshot; } catch { return null; }
-    })
-    .filter((x): x is PredictionSnapshot => x !== null);
-
   // Index history by shipment_id
   const byShipment = new Map<string, PredictionSnapshot[]>();
-  for (const snap of all) {
+  for (const r of rows) {
+    const snap: PredictionSnapshot = {
+      shipment_id: r.shipment_id,
+      predicted_at: r.predicted_at.toISOString(),
+      predicted_arrival: r.predicted_arrival.toISOString(),
+      prediction_confidence: Number(r.prediction_confidence ?? 0),
+      origin: r.origin,
+      destination: r.destination,
+      mode: r.mode as "ocean" | "air",
+      carrier_scac: r.carrier_scac,
+      eta: r.eta,
+      etd: r.etd,
+      sources: (r.sources as PredictionSnapshot["sources"]) ?? [],
+    };
     let arr = byShipment.get(snap.shipment_id);
     if (!arr) { arr = []; byShipment.set(snap.shipment_id, arr); }
     arr.push(snap);

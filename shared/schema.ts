@@ -135,3 +135,34 @@ export type InsertShipment = z.infer<typeof insertShipmentSchema>;
 
 export const updateShipmentSchema = insertShipmentSchema.partial();
 export type UpdateShipment = z.infer<typeof updateShipmentSchema>;
+
+// ── App settings ───────────────────────────────────────────────────────────────
+// Persistent key/value store for API keys + feature toggles. Used to live in
+// data/app-settings.json on the server filesystem; moved to Postgres so values
+// survive Replit redeploys.
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updated_at: timestamp("updated_at").notNull().defaultNow(),
+});
+export type AppSetting = typeof appSettings.$inferSelect;
+
+// ── Prediction history ─────────────────────────────────────────────────────────
+// One row per prediction snapshot. Used by computePredictionAccuracy to score
+// the model "at decision time" (snapshot taken >= 5 days before actual arrival)
+// vs the actual arrival timestamp on the matching shipment.
+export const predictionHistory = pgTable("prediction_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shipment_id: varchar("shipment_id").notNull(),
+  predicted_at: timestamp("predicted_at").notNull(),
+  predicted_arrival: timestamp("predicted_arrival").notNull(),
+  prediction_confidence: numeric("prediction_confidence"),
+  origin: text("origin"),
+  destination: text("destination"),
+  mode: text("mode").notNull(),
+  carrier_scac: text("carrier_scac"),
+  eta: date("eta"),
+  etd: date("etd"),
+  sources: jsonb("sources"),
+});
+export type PredictionRow = typeof predictionHistory.$inferSelect;
