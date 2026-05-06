@@ -17,6 +17,9 @@ import { refreshAllPredictions, computePredictionAccuracy, recomputePredictionFo
 import { voyageObserver } from "./intel/voyageObserver";
 import { flightObserver } from "./intel/flightObserver";
 import { listSettingsForUI, setSetting } from "./lib/appSettings";
+import { laneBookmarks } from "@shared/schema";
+import { getDb } from "./db";
+import { eq, desc } from "drizzle-orm";
 
 function carrierNameToScac(name: string): string | null {
   const n = name.toLowerCase();
@@ -141,6 +144,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const result = await runIntelRefresh();
       res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── Lane bookmarks ─────────────────────────────────────────────────────
+  // List, add, delete user-curated tracked lanes. Surfaced on Predictions tab.
+  app.get("/api/bookmarks", async (_req, res, next) => {
+    try {
+      const rows = await getDb().select().from(laneBookmarks).orderBy(desc(laneBookmarks.created_at));
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/bookmarks", async (req, res, next) => {
+    try {
+      const { origin, destination, mode, label, notes } = req.body ?? {};
+      if (typeof origin !== "string" || typeof destination !== "string" || (mode !== "ocean" && mode !== "air")) {
+        return res.status(400).json({ message: "origin, destination, mode ('ocean' | 'air') required" });
+      }
+      const rows = await getDb()
+        .insert(laneBookmarks)
+        .values({
+          origin: origin.trim().toUpperCase(),
+          destination: destination.trim().toUpperCase(),
+          mode,
+          label: label ?? `${origin.toUpperCase()} → ${destination.toUpperCase()}`,
+          notes: notes ?? null,
+        })
+        .returning();
+      res.status(201).json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.delete("/api/bookmarks/:id", async (req, res, next) => {
+    try {
+      const rows = await getDb()
+        .delete(laneBookmarks)
+        .where(eq(laneBookmarks.id, req.params.id))
+        .returning({ id: laneBookmarks.id });
+      if (rows.length === 0) return res.status(404).json({ message: "Not found" });
+      res.json({ id: rows[0].id });
     } catch (err) {
       next(err);
     }

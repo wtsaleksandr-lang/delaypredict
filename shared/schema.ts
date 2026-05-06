@@ -147,6 +147,22 @@ export const appSettings = pgTable("app_settings", {
 });
 export type AppSetting = typeof appSettings.$inferSelect;
 
+// ── Lane bookmarks ─────────────────────────────────────────────────────────────
+// User-curated list of lanes (origin -> destination, mode) they want to track.
+// Surfaced on the Predictions page as a watch list with claimed / predicted /
+// actual ETA stats pulled from delivered shipments + the global observer.
+export const laneBookmarks = pgTable("lane_bookmarks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Free-text label the user can edit; defaults to "ORIG -> DEST".
+  label: text("label"),
+  origin: text("origin").notNull(),       // UNLOCODE for ocean, IATA for air
+  destination: text("destination").notNull(),
+  mode: text("mode").notNull(),           // 'ocean' | 'air'
+  notes: text("notes"),
+  created_at: timestamp("created_at").notNull().defaultNow(),
+});
+export type LaneBookmark = typeof laneBookmarks.$inferSelect;
+
 // ── Prediction history ─────────────────────────────────────────────────────────
 // One row per prediction snapshot. Used by computePredictionAccuracy to score
 // the model "at decision time" (snapshot taken >= 5 days before actual arrival)
