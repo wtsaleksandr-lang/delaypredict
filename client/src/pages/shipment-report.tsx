@@ -195,7 +195,7 @@ export default function ShipmentReport({ id }: Props) {
                 <p className="text-[11px] text-muted-foreground mt-1">vs carrier ETA</p>
               </div>
               <div className="text-right">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted Arrival</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted ETA</p>
                 {shipment.predicted_arrival ? (
                   <p className="text-2xl sm:text-3xl font-black tabular-nums leading-none text-foreground">
                     {new Date(shipment.predicted_arrival as any).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
@@ -565,7 +565,7 @@ function PredictedArrivalCard({ shipment }: { shipment: Shipment }) {
         {predicted ? (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted arrival</p>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Predicted ETA</p>
               <p className="text-2xl font-bold tabular-nums text-foreground">
                 {predicted.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
               </p>
@@ -635,7 +635,7 @@ function ActualArrivalCard({ shipment }: { shipment: Shipment }) {
       </CardHeader>
       <CardContent className="px-4 pb-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div>
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Actual arrival</p>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Actual ETA</p>
           <p className="text-xl font-bold text-foreground">{actual.toLocaleDateString()}</p>
           <p className="text-[11px] text-muted-foreground">{actual.toLocaleTimeString()}</p>
         </div>

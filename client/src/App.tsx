@@ -3,9 +3,10 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Ship, Plus, List, Calculator } from "lucide-react";
+import { Ship, List, Calculator, TrendingUp } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import Calculator_ from "@/pages/home";
+import Predictions from "@/pages/predictions";
 import ShipmentsList from "@/pages/shipments-list";
 import ShipmentNew from "@/pages/shipment-new";
 import ShipmentReport from "@/pages/shipment-report";
@@ -35,13 +36,14 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background flex flex-col">
       <header className="border-b border-border/60 bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60 sticky top-0 z-50 print:hidden">
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3">
-          <Link href="/shipments" className="flex items-center gap-2 group">
+          <Link href="/predictions" className="flex items-center gap-2 group">
             <div className="w-7 h-7 rounded-md bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center shrink-0 shadow-sm shadow-primary/30 group-hover:shadow-primary/50 transition-shadow">
               <Ship className="w-4 h-4 text-primary-foreground" />
             </div>
             <span className="font-bold text-foreground tracking-tight text-lg">DelayPredict</span>
           </Link>
           <nav className="flex items-center gap-1 ml-4">
+            <NavLink href="/predictions" icon={TrendingUp}>Predictions</NavLink>
             <NavLink href="/shipments" icon={List}>Shipments</NavLink>
             <NavLink href="/calculator" icon={Calculator}>Quick Calc</NavLink>
           </nav>
@@ -64,7 +66,8 @@ function Shell({ children }: { children: React.ReactNode }) {
 function Router() {
   return (
     <Switch>
-      <Route path="/"><Shell><ShipmentsList /></Shell></Route>
+      <Route path="/"><Shell><Predictions /></Shell></Route>
+      <Route path="/predictions"><Shell><Predictions /></Shell></Route>
       <Route path="/shipments"><Shell><ShipmentsList /></Shell></Route>
       <Route path="/shipments/new"><Shell><ShipmentNew /></Shell></Route>
       <Route path="/shipments/:id">{(params) => <Shell><ShipmentReport id={params.id} /></Shell>}</Route>
