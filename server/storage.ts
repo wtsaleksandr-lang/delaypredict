@@ -1,7 +1,6 @@
-import { type User, type InsertUser, type Shipment, type InsertShipment, type UpdateShipment } from "@shared/schema";
-import { randomUUID } from "crypto";
-import { promises as fs } from "fs";
-import path from "path";
+import { type User, type InsertUser, type Shipment, type InsertShipment, type UpdateShipment, shipments as shipmentsTable, users as usersTable } from "@shared/schema";
+import { eq, and, sql, desc, isNotNull, lt, ne, or } from "drizzle-orm";
+import { getDb } from "./db";
 
 export interface IStorage {
   // Users (kept for optional future internal auth)
@@ -19,17 +18,12 @@ export interface IStorage {
   listShipmentsNeedingTrackingRefresh(maxAgeMs: number): Promise<Shipment[]>;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
-const SHIPMENTS_FILE = path.join(DATA_DIR, "shipments.json");
-
 /**
  * Lock the policy reference ETD/ETA the moment a shipment first moves into
- * in_transit (or actual_departure becomes known). This is the parametric
- * insurance reference timestamp — once locked, later carrier ETA updates
- * MUST NOT overwrite it. Mutates `merged` in place.
+ * in_transit (or actual_departure becomes known). Mutates `merged` in place.
+ * Once policy_eta_locked is set, later carrier ETA updates MUST NOT overwrite it.
  */
 function maybeLockPolicyEta(prev: Shipment, merged: Shipment): void {
-  // Already locked → never re-lock.
   if (merged.policy_eta_locked) return;
 
   const movingToInTransit =
@@ -37,199 +31,138 @@ function maybeLockPolicyEta(prev: Shipment, merged: Shipment): void {
     (merged.status === "in_transit" || (merged.actual_departure && !prev.actual_departure));
 
   if (!movingToInTransit) return;
-  if (!merged.eta) return; // nothing meaningful to lock
+  if (!merged.eta) return;
 
   (merged as any).policy_etd_locked = merged.etd ?? prev.etd ?? null;
   (merged as any).policy_eta_locked = merged.eta ?? prev.eta ?? null;
   (merged as any).policy_locked_at = new Date();
 }
 
-// File-backed JSON storage. Good enough for personal/internal use.
-// Swap to PostgresStorage later if multiple users / concurrency become a concern.
-export class JsonFileStorage implements IStorage {
-  private users = new Map<string, User>();
-  private shipments = new Map<string, Shipment>();
-  private writeQueue: Promise<void> = Promise.resolve();
-  private loaded = false;
-
-  private async ensureLoaded() {
-    if (this.loaded) return;
-    this.loaded = true;
-    try {
-      await fs.mkdir(DATA_DIR, { recursive: true });
-      const raw = await fs.readFile(SHIPMENTS_FILE, "utf-8");
-      const parsed: Shipment[] = JSON.parse(raw);
-      for (const s of parsed) {
-        // Re-hydrate Date fields that JSON serialized as strings
-        const reh: any = { ...s };
-        for (const k of ["created_at", "updated_at", "tracking_last_polled", "tracking_last_event_at", "ais_eta", "ais_static_updated_at", "predicted_arrival", "prediction_updated_at", "policy_locked_at"]) {
-          if (reh[k] && typeof reh[k] === "string") reh[k] = new Date(reh[k]);
-        }
-        this.shipments.set(s.id, reh as Shipment);
-      }
-    } catch (err: any) {
-      if (err.code !== "ENOENT") {
-        console.error("[storage] failed to load shipments:", err);
-      }
-    }
+/**
+ * Convert numeric inputs (TS `number`) to the `string` shape Drizzle expects
+ * for pg-numeric columns. Pass-through for everything else.
+ */
+function coerceNumericFields(data: Record<string, any>): Record<string, any> {
+  const NUMERIC = new Set([
+    "risk_score", "base_delay_probability", "expected_delay_days",
+    "best_ev", "cost", "sale_price", "insurance_premium", "actual_delay_days",
+    "prediction_confidence", "predicted_delay_days",
+  ]);
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(data)) {
+    out[k] = NUMERIC.has(k) && typeof v === "number" ? String(v) : v;
   }
+  return out;
+}
 
-  private persist() {
-    // Serialize writes so concurrent calls don't clobber the file
-    this.writeQueue = this.writeQueue.then(async () => {
-      const list = Array.from(this.shipments.values());
-      const tmp = SHIPMENTS_FILE + ".tmp";
-      await fs.writeFile(tmp, JSON.stringify(list, null, 2), "utf-8");
-      await fs.rename(tmp, SHIPMENTS_FILE);
-    }).catch((err) => {
-      console.error("[storage] persist failed:", err);
-    });
-    return this.writeQueue;
-  }
+class PgStorage implements IStorage {
+  private get db() { return getDb(); }
 
   async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+    const rows = await this.db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+    return rows[0];
   }
+
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find((u) => u.username === username);
+    const rows = await this.db.select().from(usersTable).where(eq(usersTable.username, username)).limit(1);
+    return rows[0];
   }
+
   async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+    const rows = await this.db.insert(usersTable).values(insertUser).returning();
+    return rows[0];
   }
 
   async listShipments(): Promise<Shipment[]> {
-    await this.ensureLoaded();
-    return Array.from(this.shipments.values()).sort((a, b) => {
-      const at = a.created_at instanceof Date ? a.created_at.getTime() : new Date(a.created_at as any).getTime();
-      const bt = b.created_at instanceof Date ? b.created_at.getTime() : new Date(b.created_at as any).getTime();
-      return bt - at;
-    });
+    return await this.db.select().from(shipmentsTable).orderBy(desc(shipmentsTable.created_at));
   }
 
   async getShipment(id: string): Promise<Shipment | undefined> {
-    await this.ensureLoaded();
-    return this.shipments.get(id);
+    const rows = await this.db.select().from(shipmentsTable).where(eq(shipmentsTable.id, id)).limit(1);
+    return rows[0];
   }
 
   async createShipment(data: InsertShipment): Promise<Shipment> {
-    await this.ensureLoaded();
-    const id = randomUUID();
-    const now = new Date();
-    const shipment = {
-      id,
-      personal_ref: data.personal_ref ?? null,
-      mode: data.mode,
-      booking_number: data.booking_number ?? null,
-      container_number: data.container_number ?? null,
-      awb_number: data.awb_number ?? null,
-      flight_number: data.flight_number ?? null,
-      carrier_scac: data.carrier_scac ?? null,
-      vessel_mmsi: data.vessel_mmsi ?? null,
-      vessel_name: data.vessel_name ?? null,
-      origin: data.origin ?? null,
-      destination: data.destination ?? null,
-      etd: data.etd ?? null,
-      eta: data.eta ?? null,
-      inputs_json: data.inputs_json,
-      result_json: data.result_json,
-      risk_score: data.risk_score?.toString() ?? null,
-      base_delay_probability: data.base_delay_probability?.toString() ?? null,
-      expected_delay_days: data.expected_delay_days?.toString() ?? null,
-      best_trigger: data.best_trigger ?? null,
-      best_ev: data.best_ev?.toString() ?? null,
-      recommendation: data.recommendation ?? null,
-      cost: data.cost?.toString() ?? null,
-      sale_price: data.sale_price?.toString() ?? null,
-      insurance_premium: data.insurance_premium?.toString() ?? null,
-      insurance_chosen_trigger: data.insurance_chosen_trigger ?? null,
-      tracking_provider: null,
-      tracking_status: null,
-      tracking_last_polled: null,
-      tracking_last_event_at: null,
-      actual_departure: null,
-      actual_arrival: null,
-      actual_arrival_source: null,
-      actual_delay_days: null,
-      tracking_payload: null,
-      ais_destination: null,
-      ais_eta: null,
-      ais_nav_status: null,
-      ais_static_updated_at: null,
-      policy_etd_locked: null,
-      policy_eta_locked: null,
-      policy_locked_at: null,
-      predicted_arrival: null,
-      predicted_delay_days: null,
-      prediction_confidence: null,
-      prediction_sources: null,
-      prediction_updated_at: null,
+    const insertValues = coerceNumericFields({
+      ...data,
       status: data.status ?? "planned",
-      notes: data.notes ?? null,
-      created_at: now,
-      updated_at: now,
-    } as unknown as Shipment;
-    this.shipments.set(id, shipment);
-    await this.persist();
-    return shipment;
+    });
+    const rows = await this.db.insert(shipmentsTable).values(insertValues as any).returning();
+    return rows[0];
   }
 
   async updateShipment(id: string, data: UpdateShipment): Promise<Shipment | undefined> {
-    await this.ensureLoaded();
-    const existing = this.shipments.get(id);
+    const existing = await this.getShipment(id);
     if (!existing) return undefined;
-    const merged = {
-      ...existing,
-      ...Object.fromEntries(
-        Object.entries(data).map(([k, v]) => {
-          // Numeric fields are stored as string in pg-numeric mapping
-          if (
-            ["risk_score", "base_delay_probability", "expected_delay_days", "best_ev", "cost", "sale_price", "insurance_premium", "actual_delay_days"].includes(k) &&
-            typeof v === "number"
-          ) {
-            return [k, v.toString()];
-          }
-          return [k, v];
-        }),
-      ),
-      updated_at: new Date(),
-    } as Shipment;
+
+    const patch: any = { ...coerceNumericFields(data as Record<string, any>), updated_at: new Date() };
+
+    // Compute the post-update shipment shape locally so the lock helper can
+    // see both before and after state, then apply any lock fields it sets.
+    const merged = { ...existing, ...patch } as Shipment;
     maybeLockPolicyEta(existing, merged);
-    this.shipments.set(id, merged);
-    await this.persist();
-    return merged;
+    if (merged.policy_eta_locked && !existing.policy_eta_locked) {
+      patch.policy_etd_locked = merged.policy_etd_locked;
+      patch.policy_eta_locked = merged.policy_eta_locked;
+      patch.policy_locked_at = merged.policy_locked_at;
+    }
+
+    const rows = await this.db
+      .update(shipmentsTable)
+      .set(patch)
+      .where(eq(shipmentsTable.id, id))
+      .returning();
+    return rows[0];
   }
 
   async updateShipmentTracking(id: string, patch: Partial<Shipment>): Promise<Shipment | undefined> {
-    await this.ensureLoaded();
-    const existing = this.shipments.get(id);
+    const existing = await this.getShipment(id);
     if (!existing) return undefined;
-    const merged = { ...existing, ...patch, updated_at: new Date() } as Shipment;
+
+    const update: any = { ...patch, updated_at: new Date() };
+    const merged = { ...existing, ...update } as Shipment;
     maybeLockPolicyEta(existing, merged);
-    this.shipments.set(id, merged);
-    await this.persist();
-    return merged;
+    if (merged.policy_eta_locked && !existing.policy_eta_locked) {
+      update.policy_etd_locked = merged.policy_etd_locked;
+      update.policy_eta_locked = merged.policy_eta_locked;
+      update.policy_locked_at = merged.policy_locked_at;
+    }
+
+    const rows = await this.db
+      .update(shipmentsTable)
+      .set(update)
+      .where(eq(shipmentsTable.id, id))
+      .returning();
+    return rows[0];
   }
 
   async deleteShipment(id: string): Promise<boolean> {
-    await this.ensureLoaded();
-    const existed = this.shipments.delete(id);
-    if (existed) await this.persist();
-    return existed;
+    const rows = await this.db
+      .delete(shipmentsTable)
+      .where(eq(shipmentsTable.id, id))
+      .returning({ id: shipmentsTable.id });
+    return rows.length > 0;
   }
 
   async listShipmentsNeedingTrackingRefresh(maxAgeMs: number): Promise<Shipment[]> {
-    await this.ensureLoaded();
-    const now = Date.now();
-    return Array.from(this.shipments.values()).filter((s) => {
-      if (s.status === "delivered" || s.status === "cancelled") return false;
-      if (!s.container_number && !s.awb_number) return false;
-      const last = s.tracking_last_polled instanceof Date ? s.tracking_last_polled.getTime() : (s.tracking_last_polled ? new Date(s.tracking_last_polled as any).getTime() : 0);
-      return now - last > maxAgeMs;
-    });
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    // Active shipments (not delivered/cancelled) that have a trackable id
+    // and were last polled before the cutoff (or never).
+    return await this.db
+      .select()
+      .from(shipmentsTable)
+      .where(
+        and(
+          ne(shipmentsTable.status, "delivered"),
+          ne(shipmentsTable.status, "cancelled"),
+          or(isNotNull(shipmentsTable.container_number), isNotNull(shipmentsTable.awb_number)),
+          or(
+            sql`${shipmentsTable.tracking_last_polled} IS NULL`,
+            lt(shipmentsTable.tracking_last_polled, cutoff),
+          ),
+        ),
+      );
   }
 }
 
-export const storage: IStorage = new JsonFileStorage();
+export const storage: IStorage = new PgStorage();
