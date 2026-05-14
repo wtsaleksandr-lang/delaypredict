@@ -1,3 +1,9 @@
+// Doppler → process.env bootstrap. MUST be the very first import so the
+// fetched secrets are present in process.env before any other module
+// (dotenv/config, ./db, ./jobs/*, etc.) reads its config at import time.
+// See ./bootstrapDoppler.ts for soft-fail semantics and the
+// DOPPLER_OVERRIDE_KEYS escape hatch.
+import "./bootstrapDoppler";
 // Load .env on local hosts (Replit/etc inject env directly, but local Node doesn't).
 // Must run before any module reads process.env.
 import "dotenv/config";
